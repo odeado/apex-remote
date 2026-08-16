@@ -88,6 +88,19 @@ const server = http.createServer((req, res) => {
         return;
     }
 
+    // ── HTTP Endpoint: Sólo inputs (polling rápido ~30Hz) ────────────────────
+    if (req.method === 'GET' && req.url.startsWith('/api/agent/inputs')) {
+        const urlParams = new URLSearchParams(req.url.split('?')[1]);
+        const id = urlParams.get('id');
+        if (!id) { res.writeHead(400); res.end(); return; }
+        let session = sessions.get(id);
+        if (!session) { res.writeHead(200, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' }); res.end(JSON.stringify({ hasViewers: false, inputs: [] })); return; }
+        const pendingInputs = session.inputs.splice(0, 50);
+        res.writeHead(200, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*', 'Cache-Control': 'no-cache' });
+        res.end(JSON.stringify({ hasViewers: session.viewers.size > 0, inputs: pendingInputs }));
+        return;
+    }
+
     // Servir UI estática
     let filePath = path.join(CLIENT_DIR, req.url === '/' ? 'index.html' : req.url);
     const ext    = path.extname(filePath);
