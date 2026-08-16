@@ -80,9 +80,16 @@ class ApexRemote {
             else document.exitFullscreen?.();
         });
 
-        // Input del canvas
+        // Input del canvas con Throttle anti-bucle
+        let lastMouseMove = 0;
         if (this.canvas) {
-            this.canvas.addEventListener('mousemove',   e => this._sendInput({ MouseMove:  this._canvasCoords(e) }));
+            this.canvas.addEventListener('mousemove', e => {
+                const now = performance.now();
+                if (now - lastMouseMove > 30) {
+                    lastMouseMove = now;
+                    this._sendInput({ MouseMove: this._canvasCoords(e) });
+                }
+            });
             this.canvas.addEventListener('mousedown',   e => { e.preventDefault(); this._sendInput({ MouseDown: { button: ['Left','Middle','Right'][e.button] ?? 'Left' } }); });
             this.canvas.addEventListener('mouseup',     e => this._sendInput({ MouseUp:   { button: ['Left','Middle','Right'][e.button] ?? 'Left' } }));
             this.canvas.addEventListener('contextmenu', e => e.preventDefault());

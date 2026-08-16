@@ -25,7 +25,7 @@ namespace ApexRemote
             Application.EnableVisualStyles();
             Application.SetCompatibleTextRenderingDefault(false);
 
-            string serverHost = args.Length > 0 ? args[0] : "hydrogen-fda-homework-mat.trycloudflare.com";
+            string serverHost = args.Length > 0 ? args[0] : "apex-remote.onrender.com";
             string id = args.Length > 1 ? args[1] : new Random().Next(100000, 999999).ToString();
 
             Application.Run(new AgentForm(serverHost, id));
@@ -39,6 +39,21 @@ namespace ApexRemote
 
         [DllImport("user32.dll")]
         private static extern void keybd_event(byte bVk, byte bScan, uint dwFlags, int dwExtraInfo);
+
+        [DllImport("user32.dll")]
+        private static extern bool DrawIconEx(IntPtr hdc, int xLeft, int yTop, IntPtr hIcon, int cxWidth, int cyWidth, uint istepIfAniCur, IntPtr hbrFlickerFreeDraw, uint diFlags);
+
+        [DllImport("user32.dll")]
+        private static extern bool GetCursorInfo(out CURSORINFO pci);
+
+        [StructLayout(LayoutKind.Sequential)]
+        private struct POINT { public int x; public int y; }
+
+        [StructLayout(LayoutKind.Sequential)]
+        private struct CURSORINFO { public int cbSize; public int flags; public IntPtr hCursor; public POINT ptScreenPos; }
+
+        private const uint CURSOR_SHOWING = 0x00000001;
+        private const uint DI_NORMAL = 0x0003;
 
         private const int MOUSEEVENTF_LEFTDOWN = 0x02;
         private const int MOUSEEVENTF_LEFTUP = 0x04;
@@ -134,7 +149,7 @@ namespace ApexRemote
 
             lblStatus = new Label
             {
-                Text = "🟡 Conectando a Internet...",
+                Text = "🟡 Conectando al servidor central...",
                 Font = new Font("Segoe UI", 9, FontStyle.Regular),
                 ForeColor = Color.FromArgb(255, 200, 0),
                 Location = new Point(18, 128),
@@ -182,7 +197,7 @@ namespace ApexRemote
             while (!_cts.IsCancellationRequested)
             {
                 try {
-                    byte[] jpeg = _hasViewers ? CapturePrimaryScreenJpeg(50) : new byte[0]; // Compresión optimizada Q50 ultra-rápida
+                    byte[] jpeg = _hasViewers ? CapturePrimaryScreenJpeg(50) : new byte[0];
 
                     HttpWebRequest req = (HttpWebRequest)WebRequest.Create(frameUrl);
                     req.Method = "POST";
@@ -207,7 +222,6 @@ namespace ApexRemote
                                 UpdateStatus("🔵 En transmisión activa con controlador", Color.FromArgb(0, 229, 255));
                             }
 
-                            // Procesar eventos de input entrantes
                             ProcessInputEvents(respText);
                         }
                         else
@@ -224,14 +238,14 @@ namespace ApexRemote
                     UpdateStatus("🟢 Conectado a Internet (Listo)", Color.FromArgb(0, 230, 118));
                 }
 
-                await Task.Delay(25); // ~40 FPS ultra-rápido
+                await Task.Delay(25);
             }
         }
 
         private void ProcessInputEvents(string jsonText)
         {
             try {
-                // Inyección de movimiento de ratón
+                // Inyección de movimiento de ratón con filtro anti-bucle
                 if (jsonText.Contains("MouseMove"))
                 {
                     int xIdx = jsonText.IndexOf("\"x\":");
@@ -243,13 +257,19 @@ namespace ApexRemote
                         int yEnd = jsonText.IndexOf("}", yIdx);
                         if (yEnd == -1) yEnd = jsonText.IndexOf(",", yIdx);
 
-                        string xStr = jsonText.Substring(xIdx + 4, xEnd - (xIdx + 4)).Trim();
-                        string yStr = jsonText.Substring(yIdx + 4, yEnd - (yIdx + 4)).Trim(' ', '}');
+                        string xStr = jsonText.Substring(xIdx + 4, xEnd - (xIdx + 4)).Trim(' ', ':', '"');
+                        string yStr = jsonText.Substring(yIdx + 4, yEnd - (yIdx + 4)).Trim(' ', ':', '"', '}');
 
                         int x = int.Parse(xStr);
                         int y = int.Parse(yStr);
 
-                        Cursor.Position = new Point(x, y);
+                        // Mover solo si la diferencia es mayor a 4 píxeles (Evita bucles infinitos de feedback)
+                        int dx = Math.Abs(Cursor.Position.X - x);
+                        int dy = Math.Abs(Cursor.Position.Y - y);
+                        if (dx > 4 || dy > 4)
+                        {
+                            Cursor.Position = new Point(x, y);
+                        }
                     }
                 }
 
@@ -276,7 +296,7 @@ namespace ApexRemote
                     {
                         int keyEnd = jsonText.IndexOf(",", keyIdx);
                         if (keyEnd == -1) keyEnd = jsonText.IndexOf("}", keyIdx);
-                        string keyStr = jsonText.Substring(keyIdx + 11, keyEnd - (keyIdx + 11)).Trim();
+                        string keyStr = jsonText.Substring(keyIdx + 11, keyEnd - (keyIdx + 11)).Trim(' ', ':', '"');
                         byte vk = byte.Parse(keyStr);
                         keybd_event(vk, 0, 0, 0);
                     }
@@ -289,7 +309,7 @@ namespace ApexRemote
                     {
                         int keyEnd = jsonText.IndexOf(",", keyIdx);
                         if (keyEnd == -1) keyEnd = jsonText.IndexOf("}", keyIdx);
-                        string keyStr = jsonText.Substring(keyIdx + 11, keyEnd - (keyIdx + 11)).Trim();
+                        string keyStr = jsonText.Substring(keyIdx + 11, keyEnd - (keyIdx + 11)).Trim(' ', ':', '"');
                         byte vk = byte.Parse(keyStr);
                         keybd_event(vk, 0, 2, 0);
                     }
@@ -303,7 +323,7 @@ namespace ApexRemote
                     {
                         int deltaEnd = jsonText.IndexOf("}", deltaIdx);
                         if (deltaEnd == -1) deltaEnd = jsonText.IndexOf(",", deltaIdx);
-                        string deltaStr = jsonText.Substring(deltaIdx + 10, deltaEnd - (deltaIdx + 10)).Trim(' ', '}');
+                        string deltaStr = jsonText.Substring(deltaIdx + 10, deltaEnd - (deltaIdx + 10)).Trim(' ', ':', '"', '}');
                         int deltaY = int.Parse(deltaStr);
                         mouse_event(MOUSEEVENTF_WHEEL, 0, 0, -deltaY, 0);
                     }
@@ -321,6 +341,17 @@ namespace ApexRemote
                     using (Graphics g = Graphics.FromImage(bmp))
                     {
                         g.CopyFromScreen(bounds.Location, Point.Empty, bounds.Size);
+
+                        try {
+                            CURSORINFO pci;
+                            pci.cbSize = Marshal.SizeOf(typeof(CURSORINFO));
+                            if (GetCursorInfo(out pci) && pci.flags == CURSOR_SHOWING)
+                            {
+                                IntPtr hdc = g.GetHdc();
+                                DrawIconEx(hdc, pci.ptScreenPos.x - bounds.X, pci.ptScreenPos.y - bounds.Y, pci.hCursor, 0, 0, 0, IntPtr.Zero, DI_NORMAL);
+                                g.ReleaseHdc(hdc);
+                            }
+                        } catch {}
                     }
 
                     using (MemoryStream ms = new MemoryStream())
