@@ -1,0 +1,13 @@
+{
+  "name": "apex-remote-agent-bridge",
+  "version": "1.0.0",
+  "description": "ApexRemote - Puente de señalización y streaming WebRTC para el agente Rust",
+  "main": "bridge.js",
+  "scripts": {
+    "start": "node bridge.js"
+  },
+  "dependencies": {
+    "ws": "^8.18.0",
+    "jpeg-js": "^0.4.4"
+  }
+}

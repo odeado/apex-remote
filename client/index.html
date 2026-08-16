@@ -1,0 +1,127 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ApexRemote — Control Remoto</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+    <div id="app">
+
+        <!-- ── Pantalla de Inicio ─────────────────────────────────────── -->
+        <div id="screen-home" class="screen active">
+            <div class="home-layout">
+
+                <aside class="sidebar">
+                    <div class="brand">
+                        <span class="brand-icon">⚡</span>
+                        <div>
+                            <div class="brand-name">Apex<span>Remote</span></div>
+                            <div class="brand-sub">Ultra Low-Latency</div>
+                        </div>
+                    </div>
+
+                    <div class="this-device-card">
+                        <div class="card-label">Este Dispositivo</div>
+                        <div class="this-device-name" id="local-hostname">Mi PC</div>
+                        <div class="connection-status" id="conn-status">
+                            <span class="status-dot" id="status-dot"></span>
+                            <span id="status-text">Conectando al servidor...</span>
+                        </div>
+                    </div>
+
+                    <nav class="sidebar-nav">
+                        <button class="nav-btn active" data-screen="home">🔌 Conectar</button>
+                        <button class="nav-btn" id="nav-about">⚡ ApexRemote</button>
+                    </nav>
+                </aside>
+
+                <main class="home-main">
+                    <div class="home-content">
+                        <h1>Nueva Conexión Remota</h1>
+                        <p class="subtitle">Ingresa el ID de 6 dígitos que aparece en el equipo remoto.</p>
+
+                        <div class="connect-card">
+                            <label class="field-label">ID del Equipo Remoto</label>
+                            <div class="id-input-row">
+                                <input
+                                    type="text"
+                                    id="remote-id-input"
+                                    class="id-input"
+                                    placeholder="Ej: 849302"
+                                    maxlength="6"
+                                    inputmode="numeric"
+                                    autocomplete="off"
+                                >
+                                <button id="btn-connect" class="btn-connect">
+                                    Conectar <span class="btn-icon">⚡</span>
+                                </button>
+                            </div>
+
+                            <div id="connect-error" class="connect-error hidden"></div>
+                        </div>
+
+                        <div class="recent-section">
+                            <h3>Conexiones Recientes</h3>
+                            <div class="recent-grid" id="recent-grid">
+                                <div class="recent-card demo-card">
+                                    <div class="recent-info">
+                                        <div class="recent-name">Workstation-RTX</div>
+                                        <div class="recent-id">ID: 849302</div>
+                                    </div>
+                                    <span class="latency-badge">~14ms</span>
+                                    <button class="btn-quick" onclick="apexClient.quickConnect('849302')">Conectar</button>
+                                </div>
+                                <div class="recent-card demo-card">
+                                    <div class="recent-info">
+                                        <div class="recent-name">Server-Ubuntu</div>
+                                        <div class="recent-id">ID: 213781</div>
+                                    </div>
+                                    <span class="latency-badge">~22ms</span>
+                                    <button class="btn-quick" onclick="apexClient.quickConnect('213781')">Conectar</button>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </main>
+
+            </div>
+        </div>
+
+        <!-- ── Pantalla del Visor Remoto ────────────────────────────────── -->
+        <div id="screen-viewer" class="screen">
+            <div class="viewer-hud">
+                <div class="hud-left">
+                    <span class="hud-dot active" id="viewer-dot"></span>
+                    <span id="viewer-hostname">Equipo Remoto</span>
+                    <span class="hud-id" id="viewer-id-display"></span>
+                </div>
+                <div class="hud-center">
+                    <div class="hud-stat"><span class="hud-label">FPS</span><span id="hud-fps">—</span></div>
+                    <div class="hud-stat"><span class="hud-label">LATENCIA</span><span id="hud-latency">—</span></div>
+                    <div class="hud-stat"><span class="hud-label">CALIDAD</span><span id="hud-quality">JPEG</span></div>
+                </div>
+                <div class="hud-right">
+                    <button id="btn-fullscreen" class="hud-btn" title="Pantalla completa">⛶</button>
+                    <button id="btn-disconnect" class="hud-btn danger">✕ Desconectar</button>
+                </div>
+            </div>
+
+            <div class="viewer-canvas-wrap" id="canvas-wrap">
+                <canvas id="remote-canvas"></canvas>
+                <div class="viewer-overlay" id="viewer-overlay">
+                    <div class="overlay-spinner"></div>
+                    <p id="overlay-text">Conectando...</p>
+                </div>
+            </div>
+        </div>
+
+    </div><!-- #app -->
+
+    <script src="app.js"></script>
+</body>
+</html>
