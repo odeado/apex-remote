@@ -1,6 +1,6 @@
 using System;
-using System.Collections.Generic;
 using System.Drawing;
+using System.Drawing.Drawing2D;
 using System.Drawing.Imaging;
 using System.IO;
 using System.Net;
@@ -19,380 +19,356 @@ namespace ApexRemote
         {
             try {
                 ServicePointManager.SecurityProtocol = (SecurityProtocolType)3072 | (SecurityProtocolType)768 | SecurityProtocolType.Tls;
-                ServicePointManager.ServerCertificateValidationCallback = (sender, cert, chain, sslPolicyErrors) => true;
+                ServicePointManager.ServerCertificateValidationCallback = (s, c, ch, e) => true;
             } catch {}
 
             Application.EnableVisualStyles();
             Application.SetCompatibleTextRenderingDefault(false);
 
             string serverHost = args.Length > 0 ? args[0] : "apex-remote.onrender.com";
-            string id = args.Length > 1 ? args[1] : new Random().Next(100000, 999999).ToString();
+            string id         = args.Length > 1 ? args[1] : new Random().Next(100000, 999999).ToString();
 
             Application.Run(new AgentForm(serverHost, id));
         }
     }
 
+    // ─── Agente Principal ──────────────────────────────────────────────────────
     public class AgentForm : Form
     {
-        [DllImport("user32.dll")]
-        private static extern void mouse_event(int dwFlags, int dx, int dy, int dwData, int dwExtraInfo);
+        // Win32 Mouse
+        [DllImport("user32.dll")] static extern void mouse_event(int f, int x, int y, int d, int e);
+        // Win32 Keyboard
+        [DllImport("user32.dll")] static extern void keybd_event(byte vk, byte sc, uint fl, int ei);
+        // Dibujar cursor en la captura
+        [DllImport("user32.dll")] static extern bool DrawIconEx(IntPtr hdc, int x, int y, IntPtr hIcon, int cx, int cy, uint step, IntPtr br, uint di);
+        [DllImport("user32.dll")] static extern bool GetCursorInfo(out CURSORINFO pci);
 
-        [DllImport("user32.dll")]
-        private static extern void keybd_event(byte bVk, byte bScan, uint dwFlags, int dwExtraInfo);
+        [StructLayout(LayoutKind.Sequential)] struct PT    { public int x, y; }
+        [StructLayout(LayoutKind.Sequential)] struct CURSORINFO { public int cbSize, flags; public IntPtr hCursor; public PT ptScreenPos; }
 
-        [DllImport("user32.dll")]
-        private static extern bool DrawIconEx(IntPtr hdc, int xLeft, int yTop, IntPtr hIcon, int cxWidth, int cyWidth, uint istepIfAniCur, IntPtr hbrFlickerFreeDraw, uint diFlags);
+        const int    MOUSEEVENTF_MOVE        = 0x0001;
+        const int    MOUSEEVENTF_LEFTDOWN    = 0x0002;
+        const int    MOUSEEVENTF_LEFTUP      = 0x0004;
+        const int    MOUSEEVENTF_RIGHTDOWN   = 0x0008;
+        const int    MOUSEEVENTF_RIGHTUP     = 0x0010;
+        const int    MOUSEEVENTF_MIDDLEDOWN  = 0x0020;
+        const int    MOUSEEVENTF_MIDDLEUP    = 0x0040;
+        const int    MOUSEEVENTF_WHEEL       = 0x0800;
+        const uint   CURSOR_SHOWING          = 0x00000001;
+        const uint   DI_NORMAL               = 0x0003;
+        const long   KEYEVENTF_KEYUP         = 2;
 
-        [DllImport("user32.dll")]
-        private static extern bool GetCursorInfo(out CURSORINFO pci);
+        // ── Estado ─────────────────────────────────────────────────────────────
+        readonly string _serverHost;
+        readonly string _agentId;
+        readonly CancellationTokenSource _cts = new CancellationTokenSource();
 
-        [StructLayout(LayoutKind.Sequential)]
-        private struct POINT { public int x; public int y; }
+        bool   _hasViewers = false;
+        int    _screenW    = 1280; // resolución de captura
+        int    _screenH    = 720;
 
-        [StructLayout(LayoutKind.Sequential)]
-        private struct CURSORINFO { public int cbSize; public int flags; public IntPtr hCursor; public POINT ptScreenPos; }
+        // ── UI ─────────────────────────────────────────────────────────────────
+        Label  lblStatus;
+        Label  lblId;
+        Button btnCopy;
 
-        private const uint CURSOR_SHOWING = 0x00000001;
-        private const uint DI_NORMAL = 0x0003;
-
-        private const int MOUSEEVENTF_LEFTDOWN = 0x02;
-        private const int MOUSEEVENTF_LEFTUP = 0x04;
-        private const int MOUSEEVENTF_RIGHTDOWN = 0x08;
-        private const int MOUSEEVENTF_RIGHTUP = 0x10;
-        private const int MOUSEEVENTF_MIDDLEDOWN = 0x20;
-        private const int MOUSEEVENTF_MIDDLEUP = 0x40;
-        private const int MOUSEEVENTF_WHEEL = 0x0800;
-
-        private string _serverHost;
-        private string _agentId;
-        private CancellationTokenSource _cts;
-        private bool _hasViewers = false;
-
-        private Label lblTitle;
-        private Label lblSub;
-        private Label lblId;
-        private Label lblStatus;
-        private Button btnCopy;
-        private Panel pnlCard;
-
-        public AgentForm(string serverHost, string agentId)
+        public AgentForm(string host, string id)
         {
-            _serverHost = serverHost;
-            _agentId = agentId;
-            _cts = new CancellationTokenSource();
-
-            InitUI();
-            StartNetworkLoop();
+            _serverHost = host;
+            _agentId    = id;
+            BuildUI();
+            StartLoop();
         }
 
-        private void InitUI()
+        void BuildUI()
         {
-            this.Text = "ApexRemote - Agente Remoto";
-            this.Size = new Size(450, 240);
-            this.StartPosition = FormStartPosition.CenterScreen;
-            this.FormBorderStyle = FormBorderStyle.FixedSingle;
-            this.MaximizeBox = false;
-            this.BackColor = Color.FromArgb(10, 13, 20);
+            Text        = "ApexRemote";
+            Size        = new Size(440, 220);
+            MinimumSize = Size;
+            MaximumSize = Size;
+            StartPosition = FormStartPosition.CenterScreen;
+            BackColor   = Color.FromArgb(10, 13, 20);
 
-            pnlCard = new Panel
-            {
-                Location = new Point(18, 15),
-                Size = new Size(398, 170),
-                BackColor = Color.FromArgb(17, 22, 32),
-            };
+            var panel = new Panel { Location = new Point(16, 12), Size = new Size(400, 168), BackColor = Color.FromArgb(17, 22, 32) };
 
-            lblTitle = new Label
-            {
-                Text = "⚡ ApexRemote",
-                Font = new Font("Segoe UI", 16, FontStyle.Bold),
+            var lblTitle = new Label {
+                Text      = "⚡ ApexRemote",
+                Font      = new Font("Segoe UI", 15, FontStyle.Bold),
                 ForeColor = Color.FromArgb(0, 229, 255),
-                Location = new Point(16, 12),
-                AutoSize = true
+                Location  = new Point(14, 10),
+                AutoSize  = true
             };
 
-            lblSub = new Label
-            {
-                Text = "Dile a quien te va a controlar este ID de 6 dígitos:",
-                Font = new Font("Segoe UI", 9, FontStyle.Regular),
-                ForeColor = Color.FromArgb(138, 153, 173),
-                Location = new Point(18, 44),
-                AutoSize = true
+            var lblSub = new Label {
+                Text      = "Da este ID a quien te va a controlar:",
+                Font      = new Font("Segoe UI", 9),
+                ForeColor = Color.FromArgb(90, 106, 128),
+                Location  = new Point(16, 40),
+                AutoSize  = true
             };
 
-            lblId = new Label
-            {
-                Text = _agentId,
-                Font = new Font("Consolas", 28, FontStyle.Bold),
+            lblId = new Label {
+                Text      = _agentId,
+                Font      = new Font("Consolas", 26, FontStyle.Bold),
                 ForeColor = Color.White,
-                Location = new Point(16, 68),
-                AutoSize = true
+                Location  = new Point(14, 60),
+                AutoSize  = true
             };
 
-            btnCopy = new Button
-            {
-                Text = "📋 Copiar ID",
-                Font = new Font("Segoe UI", 9, FontStyle.Bold),
+            btnCopy = new Button {
+                Text      = "Copiar",
+                Font      = new Font("Segoe UI", 9, FontStyle.Bold),
                 ForeColor = Color.Black,
                 BackColor = Color.FromArgb(0, 229, 255),
                 FlatStyle = FlatStyle.Flat,
-                Location = new Point(276, 72),
-                Size = new Size(104, 38),
-                Cursor = Cursors.Hand
+                Location  = new Point(270, 65),
+                Size      = new Size(110, 36),
+                Cursor    = Cursors.Hand
             };
             btnCopy.FlatAppearance.BorderSize = 0;
-            btnCopy.Click += (s, e) =>
-            {
+            btnCopy.Click += (s, e) => {
                 Clipboard.SetText(_agentId);
-                btnCopy.Text = "✅ Copiado";
-                Task.Delay(1500).ContinueWith(_ => this.Invoke((Action)(() => btnCopy.Text = "📋 Copiar ID")));
+                btnCopy.Text = "✓ Copiado";
+                Task.Delay(1500).ContinueWith(_ => Invoke((Action)(() => btnCopy.Text = "Copiar")));
             };
 
-            lblStatus = new Label
-            {
-                Text = "🟡 Conectando al servidor central...",
-                Font = new Font("Segoe UI", 9, FontStyle.Regular),
-                ForeColor = Color.FromArgb(255, 200, 0),
-                Location = new Point(18, 128),
-                AutoSize = true
+            lblStatus = new Label {
+                Text      = "🟡 Conectando...",
+                Font      = new Font("Segoe UI", 9),
+                ForeColor = Color.FromArgb(200, 160, 0),
+                Location  = new Point(16, 126),
+                AutoSize  = true
             };
 
-            pnlCard.Controls.Add(lblTitle);
-            pnlCard.Controls.Add(lblSub);
-            pnlCard.Controls.Add(lblId);
-            pnlCard.Controls.Add(btnCopy);
-            pnlCard.Controls.Add(lblStatus);
-
-            this.Controls.Add(pnlCard);
+            panel.Controls.AddRange(new Control[] { lblTitle, lblSub, lblId, btnCopy, lblStatus });
+            Controls.Add(panel);
         }
 
-        private async void StartNetworkLoop()
+        // ──────────────────────────────────────────────────────────────────────
+        //  LOOP PRINCIPAL – HTTP POST polling (compatible Win7 + Render.com)
+        //  Enviamos frames JPEG comprimidos y recibimos inputs en cada respuesta.
+        // ──────────────────────────────────────────────────────────────────────
+        async void StartLoop()
         {
-            string baseUrl = _serverHost.StartsWith("http") 
-                ? _serverHost 
+            string baseUrl = _serverHost.StartsWith("http")
+                ? _serverHost
                 : string.Format("https://{0}", _serverHost);
 
-            if (_serverHost.StartsWith("192.168.") || _serverHost == "localhost" || _serverHost == "127.0.0.1")
-            {
+            if (_serverHost == "localhost" || _serverHost == "127.0.0.1" || _serverHost.StartsWith("192.168."))
                 baseUrl = string.Format("http://{0}:8080", _serverHost);
-            }
 
+            // Registrar sesión
             try {
-                string regUrl = baseUrl + "/api/agent/register";
-                string json = string.Format("{{\"id\":\"{0}\",\"hostname\":\"{1}\"}}", _agentId, Environment.MachineName);
-                byte[] body = Encoding.UTF8.GetBytes(json);
-
-                HttpWebRequest req = (HttpWebRequest)WebRequest.Create(regUrl);
-                req.Method = "POST";
-                req.ContentType = "application/json";
-                req.ContentLength = body.Length;
-                using (Stream s = req.GetRequestStream()) s.Write(body, 0, body.Length);
-                using (WebResponse resp = req.GetResponse()) {}
-
-                UpdateStatus("🟢 Conectado a Internet (Listo)", Color.FromArgb(0, 230, 118));
-            }
-            catch {}
+                var reg  = CreateRequest(baseUrl + "/api/agent/register");
+                reg.Method      = "POST";
+                reg.ContentType = "application/json";
+                byte[] regBody  = Encoding.UTF8.GetBytes(string.Format("{{\"id\":\"{0}\",\"hostname\":\"{1}\"}}", _agentId, Environment.MachineName));
+                reg.ContentLength = regBody.Length;
+                using (var s = reg.GetRequestStream()) s.Write(regBody, 0, regBody.Length);
+                using (reg.GetResponse()) {}
+                SetStatus("🟢 Conectado – listo para controlar", Color.FromArgb(0, 220, 100));
+            } catch { SetStatus("🟠 No se pudo conectar, reintentando...", Color.Orange); }
 
             string frameUrl = string.Format("{0}/api/agent/frame?id={1}", baseUrl, _agentId);
 
             while (!_cts.IsCancellationRequested)
             {
-                try {
-                    byte[] jpeg = _hasViewers ? CapturePrimaryScreenJpeg(50) : new byte[0];
+                try
+                {
+                    // Capturar pantalla solo si hay alguien mirando
+                    byte[] jpeg = _hasViewers ? CaptureScreen() : Array.Empty<byte>();
 
-                    HttpWebRequest req = (HttpWebRequest)WebRequest.Create(frameUrl);
-                    req.Method = "POST";
-                    req.ContentType = "image/jpeg";
-                    req.ContentLength = jpeg.Length;
-                    req.Timeout = 1500;
+                    var req = CreateRequest(frameUrl);
+                    req.Method         = "POST";
+                    req.ContentType    = "image/jpeg";
+                    req.ContentLength  = jpeg.Length;
+                    req.Timeout        = 3000;
+                    req.ReadWriteTimeout = 3000;
 
                     if (jpeg.Length > 0)
-                    {
-                        using (Stream s = req.GetRequestStream()) s.Write(jpeg, 0, jpeg.Length);
-                    }
+                        using (var s = req.GetRequestStream()) s.Write(jpeg, 0, jpeg.Length);
 
-                    using (HttpWebResponse resp = (HttpWebResponse)req.GetResponse())
-                    using (StreamReader reader = new StreamReader(resp.GetResponseStream()))
+                    using (var resp   = (HttpWebResponse)req.GetResponse())
+                    using (var reader = new System.IO.StreamReader(resp.GetResponseStream()))
                     {
-                        string respText = reader.ReadToEnd();
-                        if (respText.Contains("\"hasViewers\":true"))
-                        {
-                            if (!_hasViewers)
-                            {
-                                _hasViewers = true;
-                                UpdateStatus("🔵 En transmisión activa con controlador", Color.FromArgb(0, 229, 255));
-                            }
+                        string body = reader.ReadToEnd();
+                        bool hasViewers = body.Contains("\"hasViewers\":true");
 
-                            ProcessInputEvents(respText);
-                        }
-                        else
-                        {
-                            if (_hasViewers)
-                            {
-                                _hasViewers = false;
-                                UpdateStatus("🟢 Conectado a Internet (Listo)", Color.FromArgb(0, 230, 118));
-                            }
-                        }
+                        if (hasViewers && !_hasViewers)
+                            SetStatus("🔵 Transmitiendo – Controlador conectado", Color.FromArgb(0, 180, 255));
+                        else if (!hasViewers && _hasViewers)
+                            SetStatus("🟢 Conectado – listo para controlar", Color.FromArgb(0, 220, 100));
+
+                        _hasViewers = hasViewers;
+
+                        if (_hasViewers)
+                            ProcessInputs(body);
                     }
                 }
-                catch {
-                    UpdateStatus("🟢 Conectado a Internet (Listo)", Color.FromArgb(0, 230, 118));
-                }
+                catch { /* red inestable – reintentar */ }
 
-                await Task.Delay(25);
+                // ~30 fps cuando hay viewers, 500ms de polling cuando no hay nadie
+                await Task.Delay(_hasViewers ? 33 : 500);
             }
         }
 
-        private void ProcessInputEvents(string jsonText)
+        // ──────────────────────────────────────────────────────────────────────
+        //  Captura de pantalla optimizada (escala a 1280×720 ó 1920×1080)
+        // ──────────────────────────────────────────────────────────────────────
+        byte[] CaptureScreen()
         {
             try {
-                // Inyección de movimiento de ratón con filtro anti-bucle
-                if (jsonText.Contains("MouseMove"))
+                var bounds = Screen.PrimaryScreen.Bounds;
+
+                // Resolución de envío: 1280×720 para rapidez, configurable
+                int tw = _screenW, th = _screenH;
+
+                using (var src = new Bitmap(bounds.Width, bounds.Height, PixelFormat.Format32bppRgb))
+                using (var gSrc = Graphics.FromImage(src))
                 {
-                    int xIdx = jsonText.IndexOf("\"x\":");
-                    int yIdx = jsonText.IndexOf("\"y\":");
-                    if (xIdx != -1 && yIdx != -1)
-                    {
-                        int xEnd = jsonText.IndexOf(",", xIdx);
-                        if (xEnd == -1) xEnd = jsonText.IndexOf("}", xIdx);
-                        int yEnd = jsonText.IndexOf("}", yIdx);
-                        if (yEnd == -1) yEnd = jsonText.IndexOf(",", yIdx);
+                    gSrc.CopyFromScreen(bounds.Location, Point.Empty, bounds.Size, CopyPixelOperation.SourceCopy);
 
-                        string xStr = jsonText.Substring(xIdx + 4, xEnd - (xIdx + 4)).Trim(' ', ':', '"');
-                        string yStr = jsonText.Substring(yIdx + 4, yEnd - (yIdx + 4)).Trim(' ', ':', '"', '}');
-
-                        int x = int.Parse(xStr);
-                        int y = int.Parse(yStr);
-
-                        // Mover solo si la diferencia es mayor a 4 píxeles (Evita bucles infinitos de feedback)
-                        int dx = Math.Abs(Cursor.Position.X - x);
-                        int dy = Math.Abs(Cursor.Position.Y - y);
-                        if (dx > 4 || dy > 4)
+                    // Dibujar cursor real sobre el frame
+                    try {
+                        CURSORINFO pci; pci.cbSize = Marshal.SizeOf(typeof(CURSORINFO));
+                        if (GetCursorInfo(out pci) && pci.flags == CURSOR_SHOWING)
                         {
-                            Cursor.Position = new Point(x, y);
+                            IntPtr hdc = gSrc.GetHdc();
+                            DrawIconEx(hdc, pci.ptScreenPos.x - bounds.X, pci.ptScreenPos.y - bounds.Y,
+                                       pci.hCursor, 0, 0, 0, IntPtr.Zero, DI_NORMAL);
+                            gSrc.ReleaseHdc(hdc);
+                        }
+                    } catch {}
+
+                    using (var scaled = new Bitmap(tw, th, PixelFormat.Format32bppRgb))
+                    using (var gScaled = Graphics.FromImage(scaled))
+                    {
+                        gScaled.InterpolationMode = InterpolationMode.Low;
+                        gScaled.CompositingQuality = CompositingQuality.HighSpeed;
+                        gScaled.SmoothingMode = SmoothingMode.None;
+                        gScaled.DrawImage(src, 0, 0, tw, th);
+
+                        using (var ms = new MemoryStream())
+                        {
+                            var codec = GetJpegCodec();
+                            var ep    = new EncoderParameters(1);
+                            ep.Param[0] = new EncoderParameter(System.Drawing.Imaging.Encoder.Quality, 45L);
+                            scaled.Save(ms, codec, ep);
+                            return ms.ToArray();
                         }
                     }
                 }
+            }
+            catch { return Array.Empty<byte>(); }
+        }
 
-                // Inyección de Clics
-                if (jsonText.Contains("MouseDown"))
-                {
-                    if (jsonText.Contains("Left")) mouse_event(MOUSEEVENTF_LEFTDOWN, 0, 0, 0, 0);
-                    else if (jsonText.Contains("Right")) mouse_event(MOUSEEVENTF_RIGHTDOWN, 0, 0, 0, 0);
-                    else if (jsonText.Contains("Middle")) mouse_event(MOUSEEVENTF_MIDDLEDOWN, 0, 0, 0, 0);
-                }
+        // ──────────────────────────────────────────────────────────────────────
+        //  Procesar eventos de input recibidos del relay
+        //  Formato JSON: {"hasViewers":true,"inputs":[{"MouseMove":{"rx":0.5,"ry":0.5}}, ...]}
+        // ──────────────────────────────────────────────────────────────────────
+        void ProcessInputs(string json)
+        {
+            try {
+                int idx = json.IndexOf("\"inputs\":");
+                if (idx < 0) return;
 
-                if (jsonText.Contains("MouseUp"))
-                {
-                    if (jsonText.Contains("Left")) mouse_event(MOUSEEVENTF_LEFTUP, 0, 0, 0, 0);
-                    else if (jsonText.Contains("Right")) mouse_event(MOUSEEVENTF_RIGHTUP, 0, 0, 0, 0);
-                    else if (jsonText.Contains("Middle")) mouse_event(MOUSEEVENTF_MIDDLEUP, 0, 0, 0, 0);
-                }
+                // Parsear cada evento JSON manualmente (sin dependencias externas)
+                int arrStart = json.IndexOf('[', idx);
+                int arrEnd   = json.LastIndexOf(']');
+                if (arrStart < 0 || arrEnd < 0) return;
 
-                // Inyección de Teclado
-                if (jsonText.Contains("KeyDown"))
-                {
-                    int keyIdx = jsonText.IndexOf("\"key_code\":");
-                    if (keyIdx != -1)
-                    {
-                        int keyEnd = jsonText.IndexOf(",", keyIdx);
-                        if (keyEnd == -1) keyEnd = jsonText.IndexOf("}", keyIdx);
-                        string keyStr = jsonText.Substring(keyIdx + 11, keyEnd - (keyIdx + 11)).Trim(' ', ':', '"');
-                        byte vk = byte.Parse(keyStr);
-                        keybd_event(vk, 0, 0, 0);
-                    }
-                }
+                string arr = json.Substring(arrStart + 1, arrEnd - arrStart - 1);
 
-                if (jsonText.Contains("KeyUp"))
+                // Dividir por objetos top-level
+                int depth = 0, start = 0;
+                for (int i = 0; i <= arr.Length; i++)
                 {
-                    int keyIdx = jsonText.IndexOf("\"key_code\":");
-                    if (keyIdx != -1)
-                    {
-                        int keyEnd = jsonText.IndexOf(",", keyIdx);
-                        if (keyEnd == -1) keyEnd = jsonText.IndexOf("}", keyIdx);
-                        string keyStr = jsonText.Substring(keyIdx + 11, keyEnd - (keyIdx + 11)).Trim(' ', ':', '"');
-                        byte vk = byte.Parse(keyStr);
-                        keybd_event(vk, 0, 2, 0);
-                    }
-                }
-
-                // Inyección de Scroll
-                if (jsonText.Contains("MouseScroll"))
-                {
-                    int deltaIdx = jsonText.IndexOf("\"delta_y\":");
-                    if (deltaIdx != -1)
-                    {
-                        int deltaEnd = jsonText.IndexOf("}", deltaIdx);
-                        if (deltaEnd == -1) deltaEnd = jsonText.IndexOf(",", deltaIdx);
-                        string deltaStr = jsonText.Substring(deltaIdx + 10, deltaEnd - (deltaIdx + 10)).Trim(' ', ':', '"', '}');
-                        int deltaY = int.Parse(deltaStr);
-                        mouse_event(MOUSEEVENTF_WHEEL, 0, 0, -deltaY, 0);
-                    }
+                    char c = i < arr.Length ? arr[i] : ',';
+                    if (c == '{') depth++;
+                    else if (c == '}') { depth--; if (depth == 0) { ProcessEvent(arr.Substring(start, i - start + 1)); start = i + 2; } }
                 }
             }
             catch {}
         }
 
-        private byte[] CapturePrimaryScreenJpeg(long quality)
+        void ProcessEvent(string ev)
         {
-            try {
-                Rectangle bounds = Screen.PrimaryScreen.Bounds;
-                using (Bitmap bmp = new Bitmap(bounds.Width, bounds.Height))
+            try
+            {
+                if (ev.Contains("MouseMove"))
                 {
-                    using (Graphics g = Graphics.FromImage(bmp))
-                    {
-                        g.CopyFromScreen(bounds.Location, Point.Empty, bounds.Size);
-
-                        try {
-                            CURSORINFO pci;
-                            pci.cbSize = Marshal.SizeOf(typeof(CURSORINFO));
-                            if (GetCursorInfo(out pci) && pci.flags == CURSOR_SHOWING)
-                            {
-                                IntPtr hdc = g.GetHdc();
-                                DrawIconEx(hdc, pci.ptScreenPos.x - bounds.X, pci.ptScreenPos.y - bounds.Y, pci.hCursor, 0, 0, 0, IntPtr.Zero, DI_NORMAL);
-                                g.ReleaseHdc(hdc);
-                            }
-                        } catch {}
-                    }
-
-                    using (MemoryStream ms = new MemoryStream())
-                    {
-                        ImageCodecInfo encoder = GetEncoder(ImageFormat.Jpeg);
-                        EncoderParameters encoderParams = new EncoderParameters(1);
-                        encoderParams.Param[0] = new EncoderParameter(System.Drawing.Imaging.Encoder.Quality, quality);
-
-                        bmp.Save(ms, encoder, encoderParams);
-                        return ms.ToArray();
-                    }
+                    double rx = ParseDouble(ev, "rx");
+                    double ry = ParseDouble(ev, "ry");
+                    var bounds = Screen.PrimaryScreen.Bounds;
+                    int x = bounds.X + (int)(rx * bounds.Width);
+                    int y = bounds.Y + (int)(ry * bounds.Height);
+                    // Mover solo si hay diferencia real
+                    if (Math.Abs(Cursor.Position.X - x) > 2 || Math.Abs(Cursor.Position.Y - y) > 2)
+                        Cursor.Position = new Point(x, y);
+                }
+                else if (ev.Contains("MouseDown"))
+                {
+                    if (ev.Contains("Left"))   mouse_event(MOUSEEVENTF_LEFTDOWN,   0, 0, 0, 0);
+                    if (ev.Contains("Right"))  mouse_event(MOUSEEVENTF_RIGHTDOWN,  0, 0, 0, 0);
+                    if (ev.Contains("Middle")) mouse_event(MOUSEEVENTF_MIDDLEDOWN, 0, 0, 0, 0);
+                }
+                else if (ev.Contains("MouseUp"))
+                {
+                    if (ev.Contains("Left"))   mouse_event(MOUSEEVENTF_LEFTUP,   0, 0, 0, 0);
+                    if (ev.Contains("Right"))  mouse_event(MOUSEEVENTF_RIGHTUP,  0, 0, 0, 0);
+                    if (ev.Contains("Middle")) mouse_event(MOUSEEVENTF_MIDDLEUP, 0, 0, 0, 0);
+                }
+                else if (ev.Contains("MouseScroll"))
+                {
+                    int dy = (int)ParseDouble(ev, "delta_y");
+                    mouse_event(MOUSEEVENTF_WHEEL, 0, 0, -dy * 3, 0);
+                }
+                else if (ev.Contains("KeyDown"))
+                {
+                    byte vk = (byte)ParseDouble(ev, "key_code");
+                    keybd_event(vk, 0, 0, 0);
+                }
+                else if (ev.Contains("KeyUp"))
+                {
+                    byte vk = (byte)ParseDouble(ev, "key_code");
+                    keybd_event(vk, 0, (uint)KEYEVENTF_KEYUP, 0);
                 }
             }
-            catch { return null; }
+            catch {}
         }
 
-        private ImageCodecInfo GetEncoder(ImageFormat format)
+        // Extrae un número double del JSON por clave
+        double ParseDouble(string json, string key)
         {
-            ImageCodecInfo[] codecs = ImageCodecInfo.GetImageEncoders();
-            foreach (ImageCodecInfo codec in codecs)
-            {
-                if (codec.FormatID == format.Guid) return codec;
-            }
+            int ki = json.IndexOf("\"" + key + "\":");
+            if (ki < 0) return 0;
+            int vs = ki + key.Length + 3;
+            int ve = vs;
+            while (ve < json.Length && (char.IsDigit(json[ve]) || json[ve] == '.' || json[ve] == '-')) ve++;
+            return double.Parse(json.Substring(vs, ve - vs), System.Globalization.CultureInfo.InvariantCulture);
+        }
+
+        HttpWebRequest CreateRequest(string url)
+        {
+            var req = (HttpWebRequest)WebRequest.Create(url);
+            req.ServicePoint.ConnectionLimit = 8;
+            return req;
+        }
+
+        ImageCodecInfo GetJpegCodec()
+        {
+            foreach (var c in ImageCodecInfo.GetImageEncoders())
+                if (c.FormatID == ImageFormat.Jpeg.Guid) return c;
             return null;
         }
 
-        private void UpdateStatus(string text, Color color)
+        void SetStatus(string text, Color color)
         {
-            if (this.InvokeRequired)
-            {
-                this.Invoke((Action)(() => UpdateStatus(text, color)));
-                return;
-            }
-            lblStatus.Text = text;
+            if (InvokeRequired) { Invoke((Action)(() => SetStatus(text, color))); return; }
+            lblStatus.Text      = text;
             lblStatus.ForeColor = color;
         }
 
-        protected override void OnFormClosing(FormClosingEventArgs e)
-        {
-            _cts.Cancel();
-            base.OnFormClosing(e);
-        }
+        protected override void OnFormClosing(FormClosingEventArgs e) { _cts.Cancel(); base.OnFormClosing(e); }
     }
 }
