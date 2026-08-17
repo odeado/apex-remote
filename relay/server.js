@@ -295,6 +295,19 @@ wss.on('connection', (ws, req) => {
                 break;
             }
 
+            case 'cursor_pos': {
+                // Agente → Viewers: posición del cursor en tiempo real
+                if (ws._role !== 'agent') return;
+                const session = sessions.get(ws._id);
+                if (session) {
+                    session.viewers.forEach(v => {
+                        if (v.readyState === WebSocket.OPEN)
+                            v.send(JSON.stringify(msg));
+                    });
+                }
+                break;
+            }
+
             case 'input': {
                 if (ws._role !== 'viewer') return;
                 const session = sessions.get(ws._id);

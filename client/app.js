@@ -81,6 +81,8 @@ class ApexRemote {
             if (this.fileExplorer) this.fileExplorer._onFsListRes(msg);
         } else if (msg.type === 'file_download_chunk') {
             if (this.fileExplorer) this.fileExplorer._onDownloadChunk(msg);
+        } else if (msg.type === 'cursor_pos') {
+            this._updateCursor(msg.rx, msg.ry);
         }
     }
 
@@ -135,6 +137,20 @@ class ApexRemote {
         this._showScreen('home');
         if (this._hudTimer) { cancelAnimationFrame(this._hudTimer); this._hudTimer = null; }
         if (this.fileExplorer) this.fileExplorer.hide();
+        const cursor = document.getElementById('remote-cursor');
+        if (cursor) cursor.classList.add('hidden');
+    }
+
+    _updateCursor(rx, ry) {
+        const el = document.getElementById('remote-cursor');
+        if (!el || !this.canvas || !this.streaming) return;
+        const canvasRect = this.canvas.getBoundingClientRect();
+        const wrapRect   = document.getElementById('canvas-wrap').getBoundingClientRect();
+        const x = (canvasRect.left - wrapRect.left) + rx * canvasRect.width;
+        const y = (canvasRect.top  - wrapRect.top)  + ry * canvasRect.height;
+        el.style.left = Math.round(x) + 'px';
+        el.style.top  = Math.round(y) + 'px';
+        el.classList.remove('hidden');
     }
 
     _agentGone() {
