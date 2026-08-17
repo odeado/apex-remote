@@ -27,7 +27,7 @@ const MIME = {
     '.jpg':  'image/jpeg',
 };
 
-const SERVER_BOOT_TIME = new Date().toLocaleTimeString('es-ES', { hour: '2-digit', minute: '2-digit', second: '2-digit' }) + ' (' + new Date().toLocaleDateString('es-ES') + ')';
+const SERVER_BOOT_TIME = new Date().toLocaleTimeString('es-ES', { timeZone: 'America/Santiago', hour: '2-digit', minute: '2-digit', second: '2-digit' }) + ' (' + new Date().toLocaleDateString('es-ES', { timeZone: 'America/Santiago' }) + ')';
 
 // ── HTTP Server ───────────────────────────────────────────────────────────────
 const server = http.createServer((req, res) => {
