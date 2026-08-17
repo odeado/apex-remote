@@ -282,22 +282,45 @@ wss.on('connection', (ws, req) => {
                 break;
             }
 
+            case 'file_download_chunk': {
+                // Agente → Viewers (archivo remoto que el viewer quiso descargar)
+                if (ws._role !== 'agent') return;
+                const session = sessions.get(ws._id);
+                if (session) {
+                    session.viewers.forEach(v => {
+                        if (v.readyState === WebSocket.OPEN)
+                            v.send(JSON.stringify(msg));
+                    });
+                }
+                break;
+            }
+
             case 'input': {
                 if (ws._role !== 'viewer') return;
                 const session = sessions.get(ws._id);
                 if (!session) return;
 
                 if (session.agent && typeof session.agent.send === 'function' && session.agent.readyState === WebSocket.OPEN) {
-                    if (msg.event && msg.event.FileChunk) {
-                        session.agent.send(JSON.stringify({ type: 'file_chunk', ...msg.event.FileChunk }));
+                    const ev = msg.event || {};
+                    if (ev.FileChunk) {
+                        session.agent.send(JSON.stringify({ type: 'file_chunk', ...ev.FileChunk }));
+                    } else if (ev.FsList) {
+                        session.agent.send(JSON.stringify({ type: 'fs_list', path: ev.FsList.path }));
+                    } else if (ev.FsDelete) {
+                        session.agent.send(JSON.stringify({ type: 'fs_delete', path: ev.FsDelete.path }));
+                    } else if (ev.FsMkdir) {
+                        session.agent.send(JSON.stringify({ type: 'fs_mkdir', path: ev.FsMkdir.path }));
+                    } else if (ev.FsDownload) {
+                        session.agent.send(JSON.stringify({ type: 'fs_download', path: ev.FsDownload.path }));
                     } else {
                         session.agent.send(JSON.stringify(msg));
                     }
                 } else {
-                    if (msg.event && msg.event.FileChunk) {
-                        session.inputs.push({ FileChunk: msg.event.FileChunk });
+                    const ev = msg.event || {};
+                    if (ev.FileChunk) {
+                        session.inputs.push({ FileChunk: ev.FileChunk });
                     } else {
-                        session.inputs.push(msg.event);
+                        session.inputs.push(ev);
                     }
                     if (session.onInputs) {
                         const inputs = session.inputs.splice(0, 50);

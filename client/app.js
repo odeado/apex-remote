@@ -66,8 +66,21 @@ class ApexRemote {
             if (this.pc && msg.candidate) this.pc.addIceCandidate(new RTCIceCandidate(msg.candidate)).catch(() => {});
         } else if (msg.type === 'error') {
             this._showError(msg.message);
+            // Si el error es de PIN, volver al home
+            if (msg.message && msg.message.toLowerCase().includes('pin')) {
+                setTimeout(() => this.endSession(), 1200);
+                const ps = document.getElementById('pin-status');
+                if (ps) { ps.textContent = '❌ PIN incorrecto'; ps.style.color = '#ff4d6d'; }
+            }
+        } else if (msg.type === 'pin_rejected') {
+            this._showError('PIN incorrecto. Verifica el PIN que muestra el agente.');
+            setTimeout(() => this.endSession(), 1500);
         } else if (msg.type === 'agent_disconnected') {
             this._agentGone();
+        } else if (msg.type === 'fs_list_res') {
+            if (this.fileExplorer) this.fileExplorer._onFsListRes(msg);
+        } else if (msg.type === 'file_download_chunk') {
+            if (this.fileExplorer) this.fileExplorer._onDownloadChunk(msg);
         }
     }
 
@@ -101,10 +114,12 @@ class ApexRemote {
         if (!this.ws || this.ws.readyState !== WebSocket.OPEN)
             return this._showError('Sin conexión al servidor. Espera un momento...');
         this._clearError();
+        const pin = (document.getElementById('remote-pin-input')?.value || '').trim();
         this._saveRecent(id);
         this._showScreen('viewer');
         this._showOverlay('Conectando con ID: ' + id + '...');
-        this.ws.send(JSON.stringify({ type: 'view', id }));
+        const msg = pin ? { type: 'view', id, pin } : { type: 'view', id };
+        this.ws.send(JSON.stringify(msg));
     }
 
     quickConnect(id) {
@@ -119,6 +134,7 @@ class ApexRemote {
         this._hideFileBar();
         this._showScreen('home');
         if (this._hudTimer) { cancelAnimationFrame(this._hudTimer); this._hudTimer = null; }
+        if (this.fileExplorer) this.fileExplorer.hide();
     }
 
     _agentGone() {
@@ -312,7 +328,15 @@ class ApexRemote {
             if (e.key === 'Enter') { const id = e.target.value.trim(); if (id.length === 6) this.startSession(id); }
             if (!/^\d$/.test(e.key) && !['Backspace','Tab','ArrowLeft','ArrowRight','Delete'].includes(e.key)) e.preventDefault();
         });
+        document.getElementById('remote-pin-input')?.addEventListener('input', () => {
+            const ps = document.getElementById('pin-status');
+            if (ps) ps.textContent = '';
+        });
         document.getElementById('btn-disconnect')?.addEventListener('click', () => this.endSession());
+        document.getElementById('btn-files-remote')?.addEventListener('click', () => {
+            if (!this.fileExplorer) this.fileExplorer = new FileExplorer(this);
+            this.fileExplorer.toggle();
+        });
         document.getElementById('btn-fullscreen')?.addEventListener('click', () => {
             const wrap = document.getElementById('canvas-wrap');
             if (!document.fullscreenElement) wrap?.requestFullscreen?.();
@@ -441,6 +465,381 @@ class ApexRemote {
     }
     _showError(msg) { const el = document.getElementById('connect-error'); if (!el) return; el.textContent = msg; el.classList.remove('hidden'); }
     _clearError()   { document.getElementById('connect-error')?.classList.add('hidden'); }
+}
+
+// ══════════════════════════════════════════════════════════════════════════════
+//  FileExplorer — Explorador Dual-Pane Local ↔ Remoto
+// ══════════════════════════════════════════════════════════════════════════════
+class FileExplorer {
+    constructor(client) {
+        this.client        = client;
+        this.localHandle   = null;   // FileSystemDirectoryHandle (File Access API)
+        this.localPath     = '';
+        this.localItems    = [];
+        this.localSelected = new Set();
+        this.localStack    = [];     // historial de navegación local
+
+        this.remotePath    = '';
+        this.remoteItems   = [];
+        this.remoteSelected = new Set();
+        this.remoteStack   = [];
+
+        this._bindUI();
+        // Pedir lista raíz del remoto al abrirse
+        this._remoteList('drives');
+    }
+
+    // ── Visibilidad ──────────────────────────────────────────────────────────
+    show()   { document.getElementById('file-manager').classList.remove('hidden'); }
+    hide()   { document.getElementById('file-manager').classList.add('hidden'); }
+    toggle() { document.getElementById('file-manager').classList.toggle('hidden'); if (!document.getElementById('file-manager').classList.contains('hidden')) this._remoteList(this.remotePath || 'drives'); }
+
+    // ── Bind UI ──────────────────────────────────────────────────────────────
+    _bindUI() {
+        document.getElementById('fm-close-btn')?.addEventListener('click', () => this.hide());
+
+        // LOCAL
+        document.getElementById('fm-local-open')?.addEventListener('click',    () => this._openLocalDir());
+        document.getElementById('fm-local-refresh')?.addEventListener('click', () => this._refreshLocal());
+        document.getElementById('fm-local-home')?.addEventListener('click',    () => this._refreshLocal());
+        document.getElementById('fm-local-up')?.addEventListener('click',      () => this._localUp());
+        document.getElementById('fm-local-mkdir')?.addEventListener('click',   () => this._localMkdir());
+        document.getElementById('fm-local-delete')?.addEventListener('click',  () => this._localDelete());
+
+        // REMOTO
+        document.getElementById('fm-remote-home')?.addEventListener('click',    () => this._remoteList('drives'));
+        document.getElementById('fm-remote-up')?.addEventListener('click',      () => this._remoteUp());
+        document.getElementById('fm-remote-refresh')?.addEventListener('click', () => this._remoteList(this.remotePath || 'drives'));
+        document.getElementById('fm-remote-mkdir')?.addEventListener('click',   () => this._remoteMkdir());
+        document.getElementById('fm-remote-delete')?.addEventListener('click',  () => this._remoteDelete());
+
+        // TRANSFERENCIA
+        document.getElementById('fm-btn-send')?.addEventListener('click', () => this._sendSelected());
+        document.getElementById('fm-btn-recv')?.addEventListener('click', () => this._recvSelected());
+    }
+
+    // ── LOCAL: File System Access API ────────────────────────────────────────
+    async _openLocalDir() {
+        if (!window.showDirectoryPicker) {
+            // fallback: input file
+            const inp = document.createElement('input');
+            inp.type = 'file'; inp.multiple = true;
+            inp.onchange = () => { if (inp.files[0]) this._loadLocalFiles(Array.from(inp.files)); };
+            inp.click(); return;
+        }
+        try {
+            const h = await window.showDirectoryPicker({ mode: 'readwrite' });
+            this.localHandle = h; this.localPath = h.name; this.localStack = [];
+            await this._refreshLocal();
+        } catch(e) { if (e.name !== 'AbortError') this.client.showToast('Error','No se pudo abrir la carpeta','❌',3000); }
+    }
+
+    _loadLocalFiles(files) {
+        this.localItems = files.map(f => ({ name: f.name, isDir: false, size: f.size, date: new Date(f.lastModified).toLocaleString('es'), _file: f }));
+        this.localPath = 'Archivos seleccionados';
+        this._renderLocal();
+    }
+
+    async _refreshLocal() {
+        if (!this.localHandle) return;
+        this.localItems = [];
+        try {
+            for await (const [name, h] of this.localHandle.entries()) {
+                if (h.kind === 'directory') {
+                    this.localItems.push({ name, isDir: true, size: 0, date: '', _handle: h });
+                } else {
+                    const f = await h.getFile();
+                    this.localItems.push({ name, isDir: false, size: f.size, date: new Date(f.lastModified).toLocaleString('es'), _handle: h, _file: f });
+                }
+            }
+        } catch(e) {}
+        this.localItems.sort((a,b) => (+b.isDir - +a.isDir) || a.name.localeCompare(b.name));
+        this.localSelected.clear();
+        this._renderLocal();
+    }
+
+    async _localEnter(item) {
+        if (!item.isDir || !item._handle) return;
+        this.localStack.push({ handle: this.localHandle, path: this.localPath });
+        this.localHandle = item._handle; this.localPath = (this.localPath ? this.localPath + '\\' : '') + item.name;
+        await this._refreshLocal();
+    }
+
+    async _localUp() {
+        if (!this.localStack.length) return;
+        const prev = this.localStack.pop();
+        this.localHandle = prev.handle; this.localPath = prev.path;
+        await this._refreshLocal();
+    }
+
+    async _localMkdir() {
+        const name = prompt('Nombre de la nueva carpeta:');
+        if (!name || !this.localHandle) return;
+        try { await this.localHandle.getDirectoryHandle(name, { create: true }); await this._refreshLocal(); } catch(e) { alert('Error: ' + e.message); }
+    }
+
+    async _localDelete() {
+        if (!this.localSelected.size) { alert('Selecciona al menos un archivo'); return; }
+        if (!confirm('¿Eliminar ' + this.localSelected.size + ' elemento(s)?')) return;
+        for (const name of this.localSelected) {
+            try { await this.localHandle.removeEntry(name, { recursive: true }); } catch(e) {}
+        }
+        await this._refreshLocal();
+    }
+
+    // ── LOCAL: Render ────────────────────────────────────────────────────────
+    _renderLocal() {
+        const el = document.getElementById('fm-local-list');
+        const pathEl = document.getElementById('fm-local-path');
+        if (pathEl) pathEl.textContent = this.localPath || '—';
+        if (!el) return;
+        if (!this.localItems.length) {
+            el.innerHTML = '<div class="fm-empty"><div class="fm-empty-icon">📂</div><span>Carpeta vacía</span></div>'; return;
+        }
+        el.innerHTML = this.localItems.map(item => {
+            const sel = this.localSelected.has(item.name) ? ' selected' : '';
+            const cls = item.isDir ? ' dir' : '';
+            const ico = item.isDir ? '📁' : this._fileIcon(item.name);
+            const sz  = item.isDir ? '—' : this._fmtSize(item.size);
+            return `<div class="fm-row${cls}${sel}" data-name="${this._esc(item.name)}" data-dir="${item.isDir}">
+                <div class="fm-row-name"><span class="fm-icon">${ico}</span><span class="fm-name-text">${this._esc(item.name)}</span></div>
+                <div class="fm-row-date">${item.date || '—'}</div>
+                <div class="fm-row-size">${sz}</div>
+            </div>`;
+        }).join('');
+        el.querySelectorAll('.fm-row').forEach(row => {
+            const name = row.dataset.name;
+            const isDir = row.dataset.dir === 'true';
+            row.addEventListener('click', (e) => {
+                if (e.detail === 2) { // dblclick
+                    if (isDir) { const item = this.localItems.find(i => i.name === name); if (item) this._localEnter(item); }
+                } else {
+                    this.localSelected.has(name) ? this.localSelected.delete(name) : this.localSelected.add(name);
+                    row.classList.toggle('selected', this.localSelected.has(name));
+                }
+            });
+        });
+    }
+
+    // ── REMOTO ───────────────────────────────────────────────────────────────
+    _remoteList(path) {
+        if (!this.client.ws || this.client.ws.readyState !== WebSocket.OPEN) return;
+        const el = document.getElementById('fm-remote-list');
+        if (el) el.innerHTML = '<div class="fm-empty"><div class="fm-empty-icon">🔄</div><span>Cargando...</span></div>';
+        this.client.ws.send(JSON.stringify({ type: 'input', event: { FsList: { path: path || 'drives' } } }));
+    }
+
+    _onFsListRes(msg) {
+        this.remotePath = msg.path || '';
+        this.remoteItems = msg.items || [];
+        this.remoteSelected.clear();
+        this._renderRemote();
+    }
+
+    _remoteUp() {
+        if (!this.remotePath || this.remotePath === 'drives') return;
+        const parts = this.remotePath.replace(/[/\\]+$/, '').split(/[/\\]/);
+        parts.pop();
+        const parent = parts.join('\\') || 'drives';
+        this._remoteList(parent);
+    }
+
+    _remoteMkdir() {
+        const name = prompt('Nombre de la nueva carpeta remota:');
+        if (!name || !this.remotePath || this.remotePath === 'drives') return;
+        const path = this.remotePath.replace(/[/\\]$/, '') + '\\' + name;
+        this.client.ws.send(JSON.stringify({ type: 'input', event: { FsMkdir: { path } } }));
+        setTimeout(() => this._remoteList(this.remotePath), 800);
+    }
+
+    _remoteDelete() {
+        if (!this.remoteSelected.size) { alert('Selecciona al menos un archivo remoto'); return; }
+        if (!confirm('¿Eliminar ' + this.remoteSelected.size + ' elemento(s) en el equipo remoto?')) return;
+        for (const name of this.remoteSelected) {
+            const fullPath = (this.remotePath === 'drives') ? name : this.remotePath.replace(/[/\\]$/, '') + '\\' + name;
+            this.client.ws.send(JSON.stringify({ type: 'input', event: { FsDelete: { path: fullPath } } }));
+        }
+        setTimeout(() => this._remoteList(this.remotePath), 800);
+    }
+
+    // ── REMOTO: Render ───────────────────────────────────────────────────────
+    _renderRemote() {
+        const el = document.getElementById('fm-remote-list');
+        const pathEl = document.getElementById('fm-remote-path');
+        if (pathEl) pathEl.textContent = this.remotePath || '—';
+        if (!el) return;
+        if (!this.remoteItems.length) {
+            el.innerHTML = '<div class="fm-empty"><div class="fm-empty-icon">📂</div><span>Carpeta vacía</span></div>'; return;
+        }
+        el.innerHTML = this.remoteItems.map(item => {
+            const sel = this.remoteSelected.has(item.name) ? ' selected' : '';
+            const cls = item.isDir ? ' dir' : '';
+            const ico = item.isDir ? '📁' : this._fileIcon(item.name);
+            const sz  = item.isDir ? '—' : this._fmtSize(item.size);
+            return `<div class="fm-row${cls}${sel}" data-name="${this._esc(item.name)}" data-dir="${item.isDir}">
+                <div class="fm-row-name"><span class="fm-icon">${ico}</span><span class="fm-name-text">${this._esc(item.name)}</span></div>
+                <div class="fm-row-date">${item.date || '—'}</div>
+                <div class="fm-row-size">${sz}</div>
+            </div>`;
+        }).join('');
+        el.querySelectorAll('.fm-row').forEach(row => {
+            const name = row.dataset.name;
+            const isDir = row.dataset.dir === 'true';
+            row.addEventListener('click', (e) => {
+                if (e.detail === 2) {
+                    if (isDir) {
+                        const path = this.remotePath === 'drives' ? name : this.remotePath.replace(/[/\\]$/, '') + '\\' + name;
+                        this._remoteList(path);
+                    }
+                } else {
+                    this.remoteSelected.has(name) ? this.remoteSelected.delete(name) : this.remoteSelected.add(name);
+                    row.classList.toggle('selected', this.remoteSelected.has(name));
+                }
+            });
+        });
+    }
+
+    // ── TRANSFERENCIA: Local → Remoto ────────────────────────────────────────
+    async _sendSelected() {
+        if (!this.localSelected.size) { alert('Selecciona archivo(s) locales primero'); return; }
+        for (const name of this.localSelected) {
+            const item = this.localItems.find(i => i.name === name);
+            if (!item || item.isDir) continue;
+            let file = item._file;
+            if (!file && item._handle) { file = await item._handle.getFile(); }
+            if (!file) continue;
+            this._queueTransfer(file, 'send');
+        }
+    }
+
+    _queueTransfer(file, dir) {
+        const tid  = 'tx-' + Date.now() + '-' + Math.random().toString(36).slice(2);
+        const card = this._addTransferCard(tid, file.name, dir);
+        const reader = new FileReader();
+        reader.onload = (e) => {
+            const b64  = e.target.result.split(',')[1] || e.target.result;
+            const CHUNK = 12000;
+            const total = Math.ceil(b64.length / CHUNK);
+            const start = performance.now();
+            let i = 0, sent = 0;
+            const next = () => {
+                if (i >= total) {
+                    this._updateCard(tid, 100, '✓ Enviado', 'done');
+                    this.client.showToast('📁 Enviado', file.name + ' → PC remota', '✅', 4000);
+                    setTimeout(() => this._remoteList(this.remotePath), 1200);
+                    return;
+                }
+                if (!this.client.streaming) { this._updateCard(tid, 0, '❌ Sin conexión', 'error'); return; }
+                const chunk = b64.slice(i * CHUNK, (i+1) * CHUNK);
+                this.client.ws.send(JSON.stringify({ type: 'input', event: { FileChunk: { name: file.name, idx: i, total, b64: chunk } } }));
+                sent += chunk.length;
+                const pct = Math.round((i+1)/total*100);
+                const sec = (performance.now()-start)/1000;
+                const spd = sec > 0 ? ((sent*.75)/(1024*1024)/sec).toFixed(1) : '0.0';
+                this._updateCard(tid, pct, pct + '% · ' + spd + ' MB/s');
+                i++;
+                setTimeout(next, 6);
+            };
+            next();
+        };
+        reader.readAsDataURL(file);
+    }
+
+    // ── TRANSFERENCIA: Remoto → Local (download) ─────────────────────────────
+    _recvSelected() {
+        if (!this.remoteSelected.size) { alert('Selecciona archivo(s) remotos primero'); return; }
+        for (const name of this.remoteSelected) {
+            const item = this.remoteItems.find(i => i.name === name);
+            if (!item || item.isDir) continue;
+            const fullPath = this.remotePath === 'drives' ? name : this.remotePath.replace(/[/\\]$/, '') + '\\' + name;
+            const tid = 'rx-' + Date.now();
+            this._addTransferCard(tid, name, 'recv');
+            this._pendingRecv = this._pendingRecv || {};
+            this._pendingRecv[name] = { tid, chunks: [], total: 0, received: 0, startMs: performance.now() };
+            this.client.ws.send(JSON.stringify({ type: 'input', event: { FsDownload: { path: fullPath } } }));
+        }
+    }
+
+    // Llamado cuando llega file_download_chunk desde el agente
+    _onDownloadChunk(msg) {
+        if (!this._pendingRecv) this._pendingRecv = {};
+        const state = this._pendingRecv[msg.name];
+        if (!state) return;
+        state.chunks[msg.idx] = msg.b64;
+        state.total = msg.total;
+        state.received = (state.received || 0) + 1;
+        const pct = Math.round(state.received / msg.total * 100);
+        const elapsed = (performance.now() - state.startMs) / 1000;
+        const approxBytes = state.received * 12000 * 0.75;
+        const spd = elapsed > 0.1 ? (approxBytes / (1024 * 1024) / elapsed).toFixed(1) + ' MB/s' : '';
+        this._updateCard(state.tid, pct, pct + '% ' + spd);
+        if (state.received >= msg.total) {
+            try {
+                // Reconstuir en orden por índice
+                let b64full = '';
+                for (let i = 0; i < msg.total; i++) b64full += (state.chunks[i] || '');
+                const binary = atob(b64full);
+                const bytes  = new Uint8Array(binary.length);
+                for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+                const blob = new Blob([bytes]);
+                const url  = URL.createObjectURL(blob);
+                const a    = document.createElement('a');
+                a.href = url; a.download = msg.name; a.click();
+                setTimeout(() => URL.revokeObjectURL(url), 3000);
+                this._updateCard(state.tid, 100, '✓ Descargado (' + this._fmtSize(bytes.length) + ')', 'done');
+                this.client.showToast('📥 Descargado', msg.name + ' ← PC remota', '✅', 4000);
+            } catch(e) {
+                this._updateCard(state.tid, 0, '❌ Error al reconstruir', 'error');
+            }
+            delete this._pendingRecv[msg.name];
+        }
+    }
+
+    // ── Queue UI ─────────────────────────────────────────────────────────────
+    _addTransferCard(tid, name, dir) {
+        const list = document.getElementById('fm-queue-list');
+        if (!list) return;
+        list.querySelector('.fm-queue-empty')?.remove();
+        const arrow = dir === 'send' ? '→' : '←';
+        const card  = document.createElement('div');
+        card.className = 'fm-transfer-item'; card.id = tid;
+        card.innerHTML = `<div class="fm-ti-name">${arrow} ${this._esc(name)}</div>
+            <div class="fm-ti-bar-wrap"><div class="fm-ti-bar" style="width:0%"></div></div>
+            <div class="fm-ti-status">Preparando...</div>`;
+        list.appendChild(card);
+        return card;
+    }
+
+    _updateCard(tid, pct, text, cls) {
+        const card = document.getElementById(tid);
+        if (!card) return;
+        const bar  = card.querySelector('.fm-ti-bar');
+        const stat = card.querySelector('.fm-ti-status');
+        if (bar)  bar.style.width = pct + '%';
+        if (stat) { stat.textContent = text; stat.className = 'fm-ti-status' + (cls ? ' '+cls : ''); }
+    }
+
+    // ── Utils ────────────────────────────────────────────────────────────────
+    _fmtSize(b) {
+        if (!b) return '0 B';
+        if (b < 1024) return b + ' B';
+        if (b < 1048576) return (b/1024).toFixed(1) + ' KB';
+        if (b < 1073741824) return (b/1048576).toFixed(1) + ' MB';
+        return (b/1073741824).toFixed(2) + ' GB';
+    }
+
+    _fileIcon(name) {
+        const ext = (name.split('.').pop() || '').toLowerCase();
+        const map = { jpg:'🖼', jpeg:'🖼', png:'🖼', gif:'🖼', bmp:'🖼', webp:'🖼', svg:'🖼',
+            mp4:'🎬', mkv:'🎬', avi:'🎬', mov:'🎬', mp3:'🎵', wav:'🎵', ogg:'🎵', flac:'🎵',
+            pdf:'📄', doc:'📝', docx:'📝', xls:'📊', xlsx:'📊', ppt:'📊', pptx:'📊',
+            zip:'🗜', rar:'🗜', '7z':'🗜', tar:'🗜', gz:'🗜',
+            exe:'⚙', dll:'⚙', bat:'⚙', cmd:'⚙', ps1:'⚙', sh:'⚙',
+            txt:'📃', log:'📃', csv:'📃', json:'📃', xml:'📃', html:'🌐', css:'🎨', js:'📜' };
+        return map[ext] || '📄';
+    }
+
+    _esc(s) { return (s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
 }
 
 window.addEventListener('DOMContentLoaded', () => { window.apexClient = new ApexRemote(); });

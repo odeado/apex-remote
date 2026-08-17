@@ -419,6 +419,26 @@ namespace ApexRemote
                                         ExecEvent(msg.Substring(es, ee - es + 1));
                                 }
                             }
+                            else if (msg.Contains("\"type\":\"fs_list\""))
+                            {
+                                string p = GetStr(msg, "path");
+                                new Thread(() => HandleFsList(string.IsNullOrEmpty(p) ? @"C:\Users" : p)) { IsBackground = true }.Start();
+                            }
+                            else if (msg.Contains("\"type\":\"fs_delete\""))
+                            {
+                                string p = GetStr(msg, "path");
+                                if (!string.IsNullOrEmpty(p)) new Thread(() => HandleFsDelete(p)) { IsBackground = true }.Start();
+                            }
+                            else if (msg.Contains("\"type\":\"fs_mkdir\""))
+                            {
+                                string p = GetStr(msg, "path");
+                                if (!string.IsNullOrEmpty(p)) new Thread(() => HandleFsMkdir(p)) { IsBackground = true }.Start();
+                            }
+                            else if (msg.Contains("\"type\":\"fs_download\""))
+                            {
+                                string p = GetStr(msg, "path");
+                                if (!string.IsNullOrEmpty(p)) new Thread(() => HandleFsDownload(p)) { IsBackground = true }.Start();
+                            }
                         }
                     }
                     catch { break; }
@@ -754,6 +774,26 @@ namespace ApexRemote
             try {
                 if (!System.IO.Directory.Exists(targetPath)) System.IO.Directory.CreateDirectory(targetPath);
                 HandleFsList(targetPath);
+            } catch {}
+        }
+
+        // Enviar archivo del equipo remoto al viewer (en chunks base64)
+        void HandleFsDownload(string filePath)
+        {
+            try {
+                if (!System.IO.File.Exists(filePath)) return;
+                byte[] data = System.IO.File.ReadAllBytes(filePath);
+                string b64full = Convert.ToBase64String(data);
+                string name = System.IO.Path.GetFileName(filePath);
+                const int CHUNK = 12000;
+                int total = (int)Math.Ceiling((double)b64full.Length / CHUNK);
+                for (int k = 0; k < total; k++)
+                {
+                    string chunk = b64full.Substring(k * CHUNK, Math.Min(CHUNK, b64full.Length - k * CHUNK));
+                    string msg = "{\"type\":\"file_download_chunk\",\"name\":\"" + EscapeJson(name) + "\",\"idx\":" + k + ",\"total\":" + total + ",\"b64\":\"" + chunk + "\"}";
+                    if (_ws != null && _wsMode) _ws.SendText(msg);
+                    System.Threading.Thread.Sleep(5);
+                }
             } catch {}
         }
 
