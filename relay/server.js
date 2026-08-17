@@ -137,12 +137,18 @@ const server = http.createServer((req, res) => {
         if (err) {
             fs.readFile(path.join(CLIENT_DIR, 'index.html'), (err2, d) => {
                 if (err2) { res.writeHead(404); return res.end('404'); }
-                res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-cache, no-store, must-revalidate' });
-                res.end(d);
+                let html = d.toString('utf8').replace(/app\.js(\?[^"]*)?/g, `app.js?t=${Date.now()}`).replace(/style\.css(\?[^"]*)?/g, `style.css?t=${Date.now()}`);
+                res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-cache, no-store, must-revalidate, max-age=0' });
+                res.end(html);
             });
             return;
         }
-        res.writeHead(200, { 'Content-Type': mime, 'Cache-Control': 'no-cache, no-store, must-revalidate' });
+        if (ext === '.html') {
+            let html = data.toString('utf8').replace(/app\.js(\?[^"]*)?/g, `app.js?t=${Date.now()}`).replace(/style\.css(\?[^"]*)?/g, `style.css?t=${Date.now()}`);
+            res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-cache, no-store, must-revalidate, max-age=0' });
+            return res.end(html);
+        }
+        res.writeHead(200, { 'Content-Type': mime, 'Cache-Control': 'no-cache, no-store, must-revalidate, max-age=0' });
         res.end(data);
     });
 });
