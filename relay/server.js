@@ -32,6 +32,13 @@ const SERVER_BOOT_TIME = new Date().toLocaleTimeString('es-ES', { timeZone: 'Ame
 // ── HTTP Server ───────────────────────────────────────────────────────────────
 const server = http.createServer((req, res) => {
 
+    // ── Health check (keeps Render free-tier awake) ───────────────────────────
+    if (req.method === 'GET' && req.url === '/health') {
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ status: 'ok', uptime: process.uptime(), sessions: sessions.size }));
+        return;
+    }
+
     // ── HTTP Endpoint: Registro de Agente (Windows 7 HTTPS Fallback) ───────────
     if (req.method === 'POST' && req.url === '/api/agent/register') {
         let body = '';
@@ -312,6 +319,20 @@ wss.on('connection', (ws, req) => {
 
 server.listen(PORT, '0.0.0.0', () => {
     console.log(`⚡ ApexRemote Relay Server v1.0 corriendo en puerto ${PORT}`);
+});
+
+// ── WebSocket Keep-Alive (evita que Render free-tier duerma el proceso) ───────
+setInterval(() => {
+    wss.clients.forEach(ws => {
+        if (ws.isAlive === false) { ws.terminate(); return; }
+        ws.isAlive = false;
+        ws.ping();
+    });
+}, 25000);
+
+wss.on('connection', ws => {
+    ws.isAlive = true;
+    ws.on('pong', () => { ws.isAlive = true; });
 });
 
 function generateId() {

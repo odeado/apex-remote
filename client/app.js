@@ -365,11 +365,6 @@ class ApexRemote {
                 }).catch(() => {});
             }
         });
-        const wrap = document.getElementById('canvas-wrap');
-        if (wrap) {
-            wrap.addEventListener('dragover', e => e.preventDefault());
-            wrap.addEventListener('drop', e => { e.preventDefault(); if (this.streaming && e.dataTransfer.files[0]) this._handleFileUpload(e.dataTransfer.files[0]); });
-        }
 
         // Touch buttons
         document.getElementById('touch-lclick')?.addEventListener('touchstart',     e => { e.preventDefault(); this._sendInput({ MouseDown: { button: 'Left'  } }); }, { passive: false });
