@@ -793,13 +793,15 @@ class FileExplorer {
             const next = () => {
                 if (i >= total) {
                     this._updateCard(tid, 100, '✓ Enviado', 'done');
-                    this.client.showToast('📁 Enviado', file.name + ' → PC remota', '✅', 4000);
+                    const destLabel = (this.remotePath && this.remotePath !== 'drives') ? this.remotePath : 'Descargas';
+                    this.client.showToast('📁 Enviado', file.name + ' → ' + destLabel, '✅', 4000);
                     setTimeout(() => this._remoteList(this.remotePath), 1200);
                     return;
                 }
                 if (!this.client.streaming) { this._updateCard(tid, 0, '❌ Sin conexión', 'error'); return; }
                 const chunk = b64.slice(i * CHUNK, (i+1) * CHUNK);
-                this.client.ws.send(JSON.stringify({ type: 'input', event: { FileChunk: { name: file.name, idx: i, total, b64: chunk } } }));
+                const targetDir = (this.remotePath && this.remotePath !== 'drives') ? this.remotePath : null;
+                this.client.ws.send(JSON.stringify({ type: 'input', event: { FileChunk: { name: file.name, idx: i, total, b64: chunk, targetDir } } }));
                 sent += chunk.length;
                 const pct = Math.round((i+1)/total*100);
                 const sec = (performance.now()-start)/1000;
