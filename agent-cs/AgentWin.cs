@@ -4,11 +4,28 @@ using System.Drawing.Drawing2D;
 using System.Drawing.Imaging;
 using System.IO;
 using System.Net;
+using System.Net.Security;
+using System.Net.Sockets;
 using System.Runtime.InteropServices;
+using System.Security.Authentication;
 using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
 using System.Windows.Forms;
+
+/*
+ * ApexRemote Agent v3.0 – WebSocket nativo (sin ClientWebSocket)
+ * ─────────────────────────────────────────────────────────────
+ * Implementa el cliente WebSocket manualmente sobre TcpClient + SslStream
+ * para máxima compatibilidad (Windows 7 SP1 .NET 4.0+).
+ *
+ * Flujo:
+ *   1. Conectar TCP → SslStream TLS 1.2 → WebSocket handshake
+ *   2. Enviar {"type":"register","id":"..."} al relay
+ *   3. Hilo RECV: leer mensajes de texto (inputs) y procesarlos
+ *   4. Hilo SEND: capturar pantalla a 25 FPS y enviar binario JPEG
+ *   5. Si WS falla → fallback HTTP polling (modo legacy)
+ */
 
 namespace ApexRemote
 {
@@ -18,25 +35,164 @@ namespace ApexRemote
         static void Main(string[] args)
         {
             try {
-                ServicePointManager.SecurityProtocol = (SecurityProtocolType)3072 | (SecurityProtocolType)768 | SecurityProtocolType.Tls;
+                ServicePointManager.SecurityProtocol =
+                    (SecurityProtocolType)3072 |    // TLS 1.2
+                    (SecurityProtocolType)768  |    // TLS 1.1
+                    SecurityProtocolType.Tls;
                 ServicePointManager.ServerCertificateValidationCallback = (s, c, ch, e) => true;
-                // Aumentar conexiones simultaneas al mismo servidor
                 ServicePointManager.DefaultConnectionLimit = 16;
             } catch {}
 
             Application.EnableVisualStyles();
             Application.SetCompatibleTextRenderingDefault(false);
 
-            string serverHost = args.Length > 0 ? args[0] : "apex-remote.onrender.com";
-            string id         = args.Length > 1 ? args[1] : new Random().Next(100000, 999999).ToString();
+            string host = args.Length > 0 ? args[0] : "apex-remote.onrender.com";
+            string id   = args.Length > 1 ? args[1] : new Random().Next(100000, 999999).ToString();
 
-            Application.Run(new AgentForm(serverHost, id));
+            Application.Run(new AgentForm(host, id));
         }
     }
 
+    // Tipo simple para reemplazar tuplas (C# 5 no soporta ValueTuple)
+    class WsFrame { public int Opcode; public byte[] Data; }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    //  Cliente WebSocket mínimo para .NET 4.0+ / Windows 7+
+    // ─────────────────────────────────────────────────────────────────────────
+    class MinWsClient : IDisposable
+    {
+        TcpClient _tcp;
+        Stream    _net;
+        readonly object _wlock = new object();
+        public bool Connected;
+
+        public bool Connect(string host, int port, bool tls, string path)
+        {
+            try {
+                _tcp         = new TcpClient();
+                _tcp.NoDelay = true;
+                _tcp.Connect(host, port);
+
+                Stream raw = _tcp.GetStream();
+                if (tls) {
+                    var ssl = new SslStream(raw, false, (s, c, ch, e) => true);
+                    ssl.AuthenticateAsClient(host, null,
+                        (SslProtocols)3072 | (SslProtocols)768,  // TLS 1.2 + 1.1
+                        false);
+                    _net = ssl;
+                } else {
+                    _net = raw;
+                }
+
+                string key = Convert.ToBase64String(Guid.NewGuid().ToByteArray());
+                byte[] hs  = Encoding.ASCII.GetBytes(
+                    "GET " + path + " HTTP/1.1\r\n" +
+                    "Host: " + host + "\r\n" +
+                    "Upgrade: websocket\r\n" +
+                    "Connection: Upgrade\r\n" +
+                    "Sec-WebSocket-Key: " + key + "\r\n" +
+                    "Sec-WebSocket-Version: 13\r\n\r\n");
+                _net.Write(hs, 0, hs.Length);
+
+                byte[] rb = new byte[2048];
+                int    n  = _net.Read(rb, 0, rb.Length);
+                string r  = Encoding.ASCII.GetString(rb, 0, n);
+                Connected = r.Contains("101");
+                return Connected;
+            }
+            catch { return false; }
+        }
+
+        // Enviar frame de texto (JSON), enmascarado como cliente WebSocket
+        public void SendText(string text)
+        {
+            SendFrame(0x81, Encoding.UTF8.GetBytes(text));
+        }
+
+        // Enviar frame binario (JPEG), enmascarado
+        public void SendBinary(byte[] data)
+        {
+            SendFrame(0x82, data);
+        }
+
+        void SendFrame(byte opcode, byte[] payload)
+        {
+            var ms = new MemoryStream();
+            ms.WriteByte((byte)(opcode | 0x80)); // FIN + opcode
+
+            byte[] mask = new byte[4];
+            new Random().NextBytes(mask);
+
+            long len = payload.Length;
+            if (len < 126) {
+                ms.WriteByte((byte)(0x80 | len));
+            } else if (len < 65536) {
+                ms.WriteByte(0x80 | 126);
+                ms.WriteByte((byte)(len >> 8));
+                ms.WriteByte((byte)(len & 0xFF));
+            } else {
+                ms.WriteByte(0x80 | 127);
+                for (int i = 7; i >= 0; i--)
+                    ms.WriteByte((byte)((len >> (i * 8)) & 0xFF));
+            }
+            ms.Write(mask, 0, 4);
+
+            byte[] masked = new byte[payload.Length];
+            for (int i = 0; i < payload.Length; i++)
+                masked[i] = (byte)(payload[i] ^ mask[i % 4]);
+            ms.Write(masked, 0, masked.Length);
+
+            byte[] frame = ms.ToArray();
+            lock (_wlock) { _net.Write(frame, 0, frame.Length); }
+        }
+
+        // Leer un frame completo (bloquea hasta que llegue)
+        // Devuelve: opcode y payload sin máscara
+        public WsFrame ReadFrame()
+        {
+            byte b0 = ReadByte();
+            byte b1 = ReadByte();
+
+            int  opcode = b0 & 0x0F;
+            bool masked = (b1 & 0x80) != 0;
+            long len    = b1 & 0x7F;
+
+            if (len == 126) {
+                len = (ReadByte() << 8) | ReadByte();
+            } else if (len == 127) {
+                len = 0;
+                for (int i = 0; i < 8; i++) len = (len << 8) | ReadByte();
+            }
+
+            byte[] maskBytes = null;
+            if (masked) {
+                maskBytes = new byte[] { ReadByte(), ReadByte(), ReadByte(), ReadByte() };
+            }
+
+            byte[] data = new byte[len];
+            for (long i = 0; i < len; i++) {
+                data[i] = ReadByte();
+                if (masked) data[i] ^= maskBytes[i % 4];
+            }
+
+            return new WsFrame { Opcode = opcode, Data = data };
+        }
+
+        byte ReadByte()
+        {
+            int b = _net.ReadByte();
+            if (b < 0) throw new EndOfStreamException("WebSocket cerrado");
+            return (byte)b;
+        }
+
+        public void Dispose() { try { _tcp.Close(); } catch {} }
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    //  Formulario principal del Agente
+    // ─────────────────────────────────────────────────────────────────────────
     public class AgentForm : Form
     {
-        // ── Win32 APIs ────────────────────────────────────────────────────────
         [DllImport("user32.dll")] static extern void mouse_event(int f, int x, int y, int d, int e);
         [DllImport("user32.dll")] static extern void keybd_event(byte vk, byte sc, uint fl, int ei);
         [DllImport("user32.dll")] static extern bool DrawIconEx(IntPtr hdc, int x, int y, IntPtr hIcon, int cx, int cy, uint step, IntPtr br, uint di);
@@ -56,24 +212,28 @@ namespace ApexRemote
         const uint DI_NORMAL              = 0x0003;
         const uint KEYEVENTF_KEYUP        = 2;
 
-        // ── Estado ─────────────────────────────────────────────────────────────
-        readonly string _serverHost;
-        readonly string _agentId;
+        readonly string _host;
+        readonly string _id;
         readonly CancellationTokenSource _cts = new CancellationTokenSource();
-        volatile bool _hasViewers = false;
 
-        // ── UI ─────────────────────────────────────────────────────────────────
-        Label  lblStatus;
-        Label  lblFps;
+        volatile bool _hasViewers = false;
+        MinWsClient   _ws         = null;
+        bool          _wsMode     = false;
+
+        Label lblStatus;
+        Label lblFps;
+
+        // ── Resolución de captura (más pequeña = más FPS) ────────────────────
+        const int CAPTURE_W = 1024;
+        const int CAPTURE_H = 576;
+        const int JPEG_Q    = 40;
 
         public AgentForm(string host, string id)
         {
-            _serverHost = host;
-            _agentId    = id;
+            _host = host;
+            _id   = id;
             BuildUI();
-            // Lanzar los dos loops de forma independiente
-            StartInputLoop();   // Loop rápido: solo inputs (30 Hz)
-            StartFrameLoop();   // Loop de frames (hasta 25 FPS)
+            StartAgent();
         }
 
         void BuildUI()
@@ -85,196 +245,265 @@ namespace ApexRemote
             StartPosition = FormStartPosition.CenterScreen;
             BackColor   = Color.FromArgb(10, 13, 20);
 
-            var panel = new Panel { Location = new Point(14, 10), Size = new Size(408, 158), BackColor = Color.FromArgb(17, 22, 32) };
+            var panel = new Panel { Location = new Point(14, 10), Size = new Size(408, 160), BackColor = Color.FromArgb(17, 22, 32) };
 
-            var lblTitle = new Label {
-                Text = "⚡ ApexRemote",
-                Font = new Font("Segoe UI", 15, FontStyle.Bold),
-                ForeColor = Color.FromArgb(0, 229, 255),
-                Location = new Point(14, 10), AutoSize = true
+            var t = new Label { Text = "⚡ ApexRemote", Font = new Font("Segoe UI", 15, FontStyle.Bold),
+                ForeColor = Color.FromArgb(0, 229, 255), Location = new Point(14, 10), AutoSize = true };
+
+            var s = new Label { Text = "Comparte este ID con quien te controlará:",
+                Font = new Font("Segoe UI", 9), ForeColor = Color.FromArgb(90, 106, 128),
+                Location = new Point(16, 40), AutoSize = true };
+
+            var idLbl = new Label { Text = _id, Font = new Font("Consolas", 26, FontStyle.Bold),
+                ForeColor = Color.White, Location = new Point(14, 58), AutoSize = true };
+
+            var btn = new Button { Text = "Copiar ID", Font = new Font("Segoe UI", 9, FontStyle.Bold),
+                ForeColor = Color.Black, BackColor = Color.FromArgb(0, 229, 255), FlatStyle = FlatStyle.Flat,
+                Location = new Point(272, 63), Size = new Size(118, 36), Cursor = Cursors.Hand };
+            btn.FlatAppearance.BorderSize = 0;
+            btn.Click += (o, e) => {
+                Clipboard.SetText(_id);
+                btn.Text = "✓ Copiado";
+                Task.Delay(1500).ContinueWith(_ => Invoke((Action)(() => btn.Text = "Copiar ID")));
             };
 
-            var lblSub = new Label {
-                Text = "Comparte este ID con quien te va a controlar:",
-                Font = new Font("Segoe UI", 9),
-                ForeColor = Color.FromArgb(90, 106, 128),
-                Location = new Point(16, 40), AutoSize = true
-            };
+            lblStatus = new Label { Text = "🟡 Conectando...", Font = new Font("Segoe UI", 9),
+                ForeColor = Color.FromArgb(200, 160, 0), Location = new Point(16, 112), AutoSize = true };
 
-            var lblId = new Label {
-                Text = _agentId,
-                Font = new Font("Consolas", 26, FontStyle.Bold),
-                ForeColor = Color.White,
-                Location = new Point(14, 58), AutoSize = true
-            };
+            lblFps = new Label { Text = "", Font = new Font("Consolas", 8),
+                ForeColor = Color.FromArgb(60, 80, 100), Location = new Point(16, 132), AutoSize = true };
 
-            var btnCopy = new Button {
-                Text = "Copiar ID",
-                Font = new Font("Segoe UI", 9, FontStyle.Bold),
-                ForeColor = Color.Black,
-                BackColor = Color.FromArgb(0, 229, 255),
-                FlatStyle = FlatStyle.Flat,
-                Location = new Point(270, 63), Size = new Size(120, 36),
-                Cursor = Cursors.Hand
-            };
-            btnCopy.FlatAppearance.BorderSize = 0;
-            btnCopy.Click += (s, e) => {
-                Clipboard.SetText(_agentId);
-                btnCopy.Text = "✓ Copiado";
-                Task.Delay(1500).ContinueWith(_ => Invoke((Action)(() => btnCopy.Text = "Copiar ID")));
-            };
-
-            lblStatus = new Label {
-                Text = "🟡 Conectando al servidor...",
-                Font = new Font("Segoe UI", 9),
-                ForeColor = Color.FromArgb(200, 160, 0),
-                Location = new Point(16, 112), AutoSize = true
-            };
-
-            lblFps = new Label {
-                Text = "",
-                Font = new Font("Consolas", 8),
-                ForeColor = Color.FromArgb(60, 80, 100),
-                Location = new Point(16, 132), AutoSize = true
-            };
-
-            panel.Controls.AddRange(new Control[] { lblTitle, lblSub, lblId, btnCopy, lblStatus, lblFps });
+            panel.Controls.AddRange(new Control[] { t, s, idLbl, btn, lblStatus, lblFps });
             Controls.Add(panel);
         }
 
         // ══════════════════════════════════════════════════════════════════════
-        //  LOOP 1 – Inputs a ~30 Hz (completamente independiente de los frames)
+        //  Inicio del agente: intentar WebSocket → fallback a HTTP
         // ══════════════════════════════════════════════════════════════════════
-        async void StartInputLoop()
+        void StartAgent()
         {
-            string baseUrl  = BuildBaseUrl();
-            string inputUrl = baseUrl + "/api/agent/inputs?id=" + _agentId;
+            SetStatus("🟡 Conectando al servidor...", Color.FromArgb(200, 160, 0));
 
-            while (!_cts.IsCancellationRequested)
-            {
-                if (_hasViewers)
-                {
-                    try {
-                        var req = MakeRequest(inputUrl);
-                        req.Method  = "GET";
-                        req.Timeout = 2000;
+            new Thread(() => {
+                // Intentar WebSocket
+                bool local = _host == "localhost" || _host == "127.0.0.1" || _host.StartsWith("192.168.");
+                _ws = new MinWsClient();
+                bool ok = local
+                    ? _ws.Connect(_host, 8080, false, "/ws")
+                    : _ws.Connect(_host, 443, true, "/ws");
 
-                        using (var resp   = (HttpWebResponse)req.GetResponse())
-                        using (var reader = new StreamReader(resp.GetResponseStream()))
-                        {
-                            string body = reader.ReadToEnd();
-                            if (body.Contains("\"inputs\":[{"))   // hay eventos reales
-                                ProcessInputJson(body);
-                        }
-                    } catch { /* ignorar, red inestable */ }
-
-                    await Task.Delay(33);   // ~30 Hz
+                if (ok) {
+                    _wsMode = true;
+                    // Registrar
+                    _ws.SendText("{\"type\":\"register\",\"id\":\"" + _id + "\",\"hostname\":\"" + Environment.MachineName + "\"}");
+                    SetStatus("🟢 Conectado WebSocket – esperando controlador", Color.FromArgb(0, 220, 100));
+                    StartWsReceiveLoop();
+                    StartWsFrameLoop();
+                } else {
+                    _ws = null;
+                    _wsMode = false;
+                    SetStatus("🟠 WebSocket no disponible, usando HTTP...", Color.Orange);
+                    // Fallback HTTP
+                    StartHttpInputLoop();
+                    StartHttpFrameLoop();
                 }
-                else
-                {
-                    await Task.Delay(200);  // sin viewers, checar despacio
-                }
-            }
+            }) { IsBackground = true }.Start();
         }
 
         // ══════════════════════════════════════════════════════════════════════
-        //  LOOP 2 – Frames JPEG (hasta 25 FPS cuando hay viewers)
+        //  MODO WEBSOCKET
         // ══════════════════════════════════════════════════════════════════════
-        async void StartFrameLoop()
-        {
-            string baseUrl  = BuildBaseUrl();
-            string frameUrl = baseUrl + "/api/agent/frame?id=" + _agentId;
-            int    frames   = 0;
-            long   fpsTime  = DateTime.UtcNow.Ticks;
 
-            // Registrar sesión
-            try {
-                var regUrl = baseUrl + "/api/agent/register";
-                var reg    = MakeRequest(regUrl);
-                reg.Method      = "POST";
-                reg.ContentType = "application/json";
-                byte[] regBody  = Encoding.UTF8.GetBytes("{\"id\":\"" + _agentId + "\",\"hostname\":\"" + Environment.MachineName + "\"}");
-                reg.ContentLength = regBody.Length;
-                using (var s = reg.GetRequestStream()) s.Write(regBody, 0, regBody.Length);
-                using (reg.GetResponse()) {}
-                SetStatus("🟢 Conectado – esperando controlador", Color.FromArgb(0, 220, 100));
-            } catch {
-                SetStatus("🟠 Sin conexión al servidor", Color.Orange);
-            }
+        // Hilo RECV: lee mensajes entrantes del relay (inputs de mouse/teclado)
+        void StartWsReceiveLoop()
+        {
+            new Thread(() => {
+                while (!_cts.IsCancellationRequested && _ws != null)
+                {
+                    try {
+                        WsFrame frame = _ws.ReadFrame();
+                        int opcode = frame.Opcode;
+                        byte[] data = frame.Data;
+
+                        if (opcode == 8) break; // Close frame
+
+                        if (opcode == 1) // Text frame = JSON
+                        {
+                            string msg = Encoding.UTF8.GetString(data);
+
+                            if (msg.Contains("\"viewer_connected\""))
+                            {
+                                _hasViewers = true;
+                                SetStatus("🔵 Transmitiendo – controlador conectado", Color.FromArgb(0, 180, 255));
+                            }
+                            else if (msg.Contains("\"viewer_disconnected\"") || msg.Contains("\"count\":0"))
+                            {
+                                _hasViewers = false;
+                                SetStatus("🟢 Conectado – esperando controlador", Color.FromArgb(0, 220, 100));
+                            }
+                            else if (msg.Contains("\"type\":\"input\""))
+                            {
+                                // Extraer el objeto event
+                                int ei = msg.IndexOf("\"event\":");
+                                if (ei >= 0)
+                                {
+                                    int es = msg.IndexOf("{", ei);
+                                    int ee = msg.LastIndexOf("}");
+                                    if (es >= 0 && ee > es)
+                                        ExecEvent(msg.Substring(es, ee - es + 1));
+                                }
+                            }
+                        }
+                    }
+                    catch { break; }
+                }
+
+                // Si el hilo recv muere, reconectar
+                if (!_cts.IsCancellationRequested)
+                {
+                    _ws = null;
+                    _wsMode = false;
+                    Thread.Sleep(2000);
+                    SetStatus("🟠 Reconectando...", Color.Orange);
+                    StartAgent();
+                }
+            }) { IsBackground = true }.Start();
+        }
+
+        // Hilo SEND: captura pantalla y envía frames binarios JPEG vía WS
+        void StartWsFrameLoop()
+        {
+            new Thread(() => {
+                int frames  = 0;
+                long tsBase = DateTime.UtcNow.Ticks;
+
+                while (!_cts.IsCancellationRequested && _ws != null && _wsMode)
+                {
+                    if (_hasViewers)
+                    {
+                        byte[] jpeg = CaptureScreen();
+                        if (jpeg.Length > 0)
+                        {
+                            try { _ws.SendBinary(jpeg); }
+                            catch { break; }
+
+                            frames++;
+                            long diff = DateTime.UtcNow.Ticks - tsBase;
+                            if (diff >= 10000000) {
+                                double fps = frames * 10000000.0 / diff;
+                                SetFps(string.Format("{0:0.0} FPS  ·  {1}×{2}  ·  {3}KB/frame  [WS]",
+                                    fps, CAPTURE_W, CAPTURE_H, jpeg.Length / 1024));
+                                frames = 0; tsBase = DateTime.UtcNow.Ticks;
+                            }
+                        }
+                        Thread.Sleep(33); // ~30 FPS máx
+                    }
+                    else
+                    {
+                        Thread.Sleep(200);
+                    }
+                }
+            }) { IsBackground = true }.Start();
+        }
+
+        // ══════════════════════════════════════════════════════════════════════
+        //  MODO HTTP (Fallback) – Long-Poll inputs + HTTP frame POST
+        // ══════════════════════════════════════════════════════════════════════
+        async void StartHttpInputLoop()
+        {
+            string baseUrl = BuildBaseUrl();
+            string pollUrl = baseUrl + "/api/agent/poll?id=" + _id;
 
             while (!_cts.IsCancellationRequested)
             {
+                bool hadError = false;
+                try {
+                    var req = MakeReq(pollUrl);
+                    req.Method  = "GET";
+                    req.Timeout = 10000;
+                    using (var resp   = (HttpWebResponse)req.GetResponse())
+                    using (var reader = new StreamReader(resp.GetResponseStream()))
+                    {
+                        string body = reader.ReadToEnd();
+                        if (body.Contains("\"inputs\":[{")) ProcessInputJson(body);
+                    }
+                }
+                catch { hadError = true; }
+
+                if (hadError) await Task.Delay(300);
+            }
+        }
+
+        async void StartHttpFrameLoop()
+        {
+            string baseUrl  = BuildBaseUrl();
+            string frameUrl = baseUrl + "/api/agent/frame?id=" + _id;
+            int    frames   = 0;
+            long   tsBase   = DateTime.UtcNow.Ticks;
+
+            try {
+                var reg = MakeReq(baseUrl + "/api/agent/register");
+                reg.Method = "POST"; reg.ContentType = "application/json";
+                byte[] rb = Encoding.UTF8.GetBytes("{\"id\":\"" + _id + "\",\"hostname\":\"" + Environment.MachineName + "\"}");
+                reg.ContentLength = rb.Length;
+                using (var s = reg.GetRequestStream()) s.Write(rb, 0, rb.Length);
+                using (reg.GetResponse()) {}
+                SetStatus("🟢 Conectado HTTP – esperando controlador", Color.FromArgb(0, 220, 100));
+            } catch {}
+
+            while (!_cts.IsCancellationRequested)
+            {
+                bool hadError = false;
                 try {
                     byte[] jpeg = _hasViewers ? CaptureScreen() : new byte[0];
-
-                    var req = MakeRequest(frameUrl);
-                    req.Method        = "POST";
-                    req.ContentType   = "image/jpeg";
-                    req.ContentLength = jpeg.Length;
-                    req.Timeout       = 3000;
-
+                    var req = MakeReq(frameUrl);
+                    req.Method = "POST"; req.ContentType = "image/jpeg";
+                    req.ContentLength = jpeg.Length; req.Timeout = 4000;
                     if (jpeg.Length > 0)
                         using (var s = req.GetRequestStream()) s.Write(jpeg, 0, jpeg.Length);
 
                     using (var resp   = (HttpWebResponse)req.GetResponse())
                     using (var reader = new StreamReader(resp.GetResponseStream()))
                     {
-                        string body    = reader.ReadToEnd();
-                        bool viewers   = body.Contains("\"hasViewers\":true");
-
-                        if (viewers && !_hasViewers)
-                            SetStatus("🔵 Transmitiendo – controlador conectado", Color.FromArgb(0, 180, 255));
-                        else if (!viewers && _hasViewers)
-                            SetStatus("🟢 Conectado – esperando controlador", Color.FromArgb(0, 220, 100));
-
-                        _hasViewers = viewers;
+                        string body = reader.ReadToEnd();
+                        bool v = body.Contains("\"hasViewers\":true");
+                        if (v && !_hasViewers) SetStatus("🔵 Transmitiendo – controlador conectado", Color.FromArgb(0, 180, 255));
+                        if (!v && _hasViewers) SetStatus("🟢 Conectado HTTP – esperando controlador", Color.FromArgb(0, 220, 100));
+                        _hasViewers = v;
                     }
 
-                    // Contador de FPS
-                    frames++;
-                    long now  = DateTime.UtcNow.Ticks;
-                    long diff = now - fpsTime;
-                    if (diff >= 10000000) // 1 segundo
-                    {
-                        double fps = frames * 10000000.0 / diff;
-                        SetFps(string.Format("{0:0.0} FPS  |  {1}x{2}", fps, _screenW, _screenH));
-                        frames  = 0;
-                        fpsTime = now;
+                    if (_hasViewers) {
+                        frames++;
+                        long diff = DateTime.UtcNow.Ticks - tsBase;
+                        if (diff >= 10000000) {
+                            double fps = frames * 10000000.0 / diff;
+                            SetFps(string.Format("{0:0.0} FPS  ·  {1}×{2}  [HTTP]", fps, CAPTURE_W, CAPTURE_H));
+                            frames = 0; tsBase = DateTime.UtcNow.Ticks;
+                        }
                     }
                 }
-                catch { /* red inestable */ }
+                catch { hadError = true; }
 
-                await Task.Delay(_hasViewers ? 40 : 1000); // 25 FPS ó 1 req/seg en idle
+                if (hadError) await Task.Delay(500);
+                else          await Task.Delay(_hasViewers ? 40 : 1000);
             }
         }
 
         // ══════════════════════════════════════════════════════════════════════
-        //  Parseo de inputs JSON → inyección Win32
+        //  Parseo de inputs y ejecución Win32
         // ══════════════════════════════════════════════════════════════════════
         void ProcessInputJson(string json)
         {
             try {
-                int arrS = json.IndexOf("[{");
-                int arrE = json.LastIndexOf("}]");
-                if (arrS < 0 || arrE < 0) return;
-
-                // Extraer todos los eventos del array
-                string arr = json.Substring(arrS + 1, arrE - arrS);  // sin [ y ]
+                int s1 = json.IndexOf("[{");
+                int s2 = json.LastIndexOf("}]");
+                if (s1 < 0 || s2 < 0) return;
+                string arr = json.Substring(s1 + 1, s2 - s1);
                 int depth = 0, start = 0;
-                for (int i = 0; i <= arr.Length; i++)
-                {
+                for (int i = 0; i <= arr.Length; i++) {
                     char c = i < arr.Length ? arr[i] : ',';
                     if      (c == '{') depth++;
-                    else if (c == '}')
-                    {
-                        depth--;
-                        if (depth == 0)
-                        {
-                            string ev = arr.Substring(start, i - start + 1);
-                            ExecEvent(ev);
-                            start = i + 2;
-                        }
-                    }
+                    else if (c == '}') { depth--; if (depth == 0) { ExecEvent(arr.Substring(start, i - start + 1)); start = i + 2; } }
                 }
             } catch {}
         }
@@ -282,100 +511,80 @@ namespace ApexRemote
         void ExecEvent(string ev)
         {
             try {
-                if (ev.Contains("MouseMove"))
-                {
-                    double rx = GetNum(ev, "rx");
-                    double ry = GetNum(ev, "ry");
-                    var    b  = Screen.PrimaryScreen.Bounds;
-                    int    x  = b.X + (int)(rx * b.Width);
-                    int    y  = b.Y + (int)(ry * b.Height);
+                if (ev.Contains("MouseMove")) {
+                    double rx = GetNum(ev, "rx"), ry = GetNum(ev, "ry");
+                    var b = Screen.PrimaryScreen.Bounds;
+                    int x = b.X + (int)(rx * b.Width), y = b.Y + (int)(ry * b.Height);
                     if (Math.Abs(Cursor.Position.X - x) > 1 || Math.Abs(Cursor.Position.Y - y) > 1)
                         Cursor.Position = new Point(x, y);
                 }
-                else if (ev.Contains("MouseDown"))
-                {
+                else if (ev.Contains("MouseDown")) {
                     if (ev.Contains("Left"))   mouse_event(MOUSEEVENTF_LEFTDOWN,   0, 0, 0, 0);
                     if (ev.Contains("Right"))  mouse_event(MOUSEEVENTF_RIGHTDOWN,  0, 0, 0, 0);
                     if (ev.Contains("Middle")) mouse_event(MOUSEEVENTF_MIDDLEDOWN, 0, 0, 0, 0);
                 }
-                else if (ev.Contains("MouseUp"))
-                {
+                else if (ev.Contains("MouseUp")) {
                     if (ev.Contains("Left"))   mouse_event(MOUSEEVENTF_LEFTUP,   0, 0, 0, 0);
                     if (ev.Contains("Right"))  mouse_event(MOUSEEVENTF_RIGHTUP,  0, 0, 0, 0);
                     if (ev.Contains("Middle")) mouse_event(MOUSEEVENTF_MIDDLEUP, 0, 0, 0, 0);
                 }
-                else if (ev.Contains("MouseScroll"))
-                {
-                    int dy = (int)GetNum(ev, "delta_y");
-                    mouse_event(MOUSEEVENTF_WHEEL, 0, 0, -dy * 3, 0);
+                else if (ev.Contains("MouseScroll")) {
+                    mouse_event(MOUSEEVENTF_WHEEL, 0, 0, -(int)GetNum(ev, "delta_y") * 3, 0);
                 }
-                else if (ev.Contains("KeyDown"))
-                {
-                    byte vk = (byte)GetNum(ev, "key_code");
-                    keybd_event(vk, 0, 0, 0);
+                else if (ev.Contains("KeyDown")) {
+                    keybd_event((byte)GetNum(ev, "key_code"), 0, 0, 0);
                 }
-                else if (ev.Contains("KeyUp"))
-                {
-                    byte vk = (byte)GetNum(ev, "key_code");
-                    keybd_event(vk, 0, KEYEVENTF_KEYUP, 0);
+                else if (ev.Contains("KeyUp")) {
+                    keybd_event((byte)GetNum(ev, "key_code"), 0, KEYEVENTF_KEYUP, 0);
                 }
             } catch {}
         }
 
-        // Extrae un número double de un fragmento JSON por clave
         double GetNum(string json, string key)
         {
-            string token = "\"" + key + "\":";
-            int ki = json.IndexOf(token);
+            string tok = "\"" + key + "\":";
+            int ki = json.IndexOf(tok);
             if (ki < 0) return 0;
-            int vs = ki + token.Length;
-            int ve = vs;
+            int vs = ki + tok.Length, ve = vs;
             while (ve < json.Length && (char.IsDigit(json[ve]) || json[ve] == '.' || json[ve] == '-')) ve++;
             if (ve == vs) return 0;
             return double.Parse(json.Substring(vs, ve - vs), System.Globalization.CultureInfo.InvariantCulture);
         }
 
         // ══════════════════════════════════════════════════════════════════════
-        //  Captura de pantalla optimizada
+        //  Captura de pantalla
         // ══════════════════════════════════════════════════════════════════════
-        int _screenW = 1280, _screenH = 720;
-
         byte[] CaptureScreen()
         {
             try {
-                var bounds = Screen.PrimaryScreen.Bounds;
-                int tw = _screenW, th = _screenH;
-
-                using (var src = new Bitmap(bounds.Width, bounds.Height, PixelFormat.Format32bppRgb))
+                var b = Screen.PrimaryScreen.Bounds;
+                using (var src = new Bitmap(b.Width, b.Height, PixelFormat.Format32bppRgb))
                 using (var gS  = Graphics.FromImage(src))
                 {
-                    gS.CopyFromScreen(bounds.Location, Point.Empty, bounds.Size, CopyPixelOperation.SourceCopy);
-
-                    // Dibujar cursor real
+                    gS.CopyFromScreen(b.Location, Point.Empty, b.Size, CopyPixelOperation.SourceCopy);
                     try {
                         CURSORINFO pci; pci.cbSize = Marshal.SizeOf(typeof(CURSORINFO));
-                        if (GetCursorInfo(out pci) && pci.flags == CURSOR_SHOWING)
-                        {
+                        if (GetCursorInfo(out pci) && pci.flags == CURSOR_SHOWING) {
                             IntPtr hdc = gS.GetHdc();
-                            DrawIconEx(hdc, pci.ptScreenPos.x - bounds.X, pci.ptScreenPos.y - bounds.Y, pci.hCursor, 0, 0, 0, IntPtr.Zero, DI_NORMAL);
+                            DrawIconEx(hdc, pci.ptScreenPos.x - b.X, pci.ptScreenPos.y - b.Y, pci.hCursor, 0, 0, 0, IntPtr.Zero, DI_NORMAL);
                             gS.ReleaseHdc(hdc);
                         }
                     } catch {}
 
-                    using (var scaled = new Bitmap(tw, th, PixelFormat.Format32bppRgb))
-                    using (var gR     = Graphics.FromImage(scaled))
+                    using (var sc = new Bitmap(CAPTURE_W, CAPTURE_H, PixelFormat.Format32bppRgb))
+                    using (var gR = Graphics.FromImage(sc))
                     {
                         gR.InterpolationMode  = InterpolationMode.Low;
                         gR.CompositingQuality = CompositingQuality.HighSpeed;
                         gR.SmoothingMode      = SmoothingMode.None;
-                        gR.DrawImage(src, 0, 0, tw, th);
+                        gR.DrawImage(src, 0, 0, CAPTURE_W, CAPTURE_H);
 
                         using (var ms = new MemoryStream())
                         {
-                            var codec = GetJpegCodec();
-                            var ep    = new EncoderParameters(1);
-                            ep.Param[0] = new EncoderParameter(System.Drawing.Imaging.Encoder.Quality, 45L);
-                            scaled.Save(ms, codec, ep);
+                            var enc = GetJpegCodec();
+                            var ep  = new EncoderParameters(1);
+                            ep.Param[0] = new EncoderParameter(System.Drawing.Imaging.Encoder.Quality, (long)JPEG_Q);
+                            sc.Save(ms, enc, ep);
                             return ms.ToArray();
                         }
                     }
@@ -386,19 +595,17 @@ namespace ApexRemote
         // ── Helpers ───────────────────────────────────────────────────────────
         string BuildBaseUrl()
         {
-            if (_serverHost == "localhost" || _serverHost == "127.0.0.1" || _serverHost.StartsWith("192.168."))
-                return "http://" + _serverHost + ":8080";
-            if (_serverHost.StartsWith("http"))
-                return _serverHost;
-            return "https://" + _serverHost;
+            if (_host == "localhost" || _host == "127.0.0.1" || _host.StartsWith("192.168."))
+                return "http://" + _host + ":8080";
+            return _host.StartsWith("http") ? _host : "https://" + _host;
         }
 
-        HttpWebRequest MakeRequest(string url)
+        HttpWebRequest MakeReq(string url)
         {
-            var req = (HttpWebRequest)WebRequest.Create(url);
-            req.ServicePoint.ConnectionLimit = 16;
-            req.KeepAlive = true;
-            return req;
+            var r = (HttpWebRequest)WebRequest.Create(url);
+            r.ServicePoint.ConnectionLimit = 16;
+            r.KeepAlive = true;
+            return r;
         }
 
         ImageCodecInfo GetJpegCodec()
@@ -411,8 +618,7 @@ namespace ApexRemote
         void SetStatus(string text, Color color)
         {
             if (InvokeRequired) { Invoke((Action)(() => SetStatus(text, color))); return; }
-            lblStatus.Text      = text;
-            lblStatus.ForeColor = color;
+            lblStatus.Text = text; lblStatus.ForeColor = color;
         }
 
         void SetFps(string text)
@@ -421,6 +627,11 @@ namespace ApexRemote
             lblFps.Text = text;
         }
 
-        protected override void OnFormClosing(FormClosingEventArgs e) { _cts.Cancel(); base.OnFormClosing(e); }
+        protected override void OnFormClosing(FormClosingEventArgs e)
+        {
+            _cts.Cancel();
+            if (_ws != null) { try { _ws.Dispose(); } catch {} }
+            base.OnFormClosing(e);
+        }
     }
 }
