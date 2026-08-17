@@ -136,12 +136,12 @@ const server = http.createServer((req, res) => {
         if (err) {
             fs.readFile(path.join(CLIENT_DIR, 'index.html'), (err2, d) => {
                 if (err2) { res.writeHead(404); return res.end('404'); }
-                res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+                res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-cache, no-store, must-revalidate' });
                 res.end(d);
             });
             return;
         }
-        res.writeHead(200, { 'Content-Type': mime });
+        res.writeHead(200, { 'Content-Type': mime, 'Cache-Control': 'no-cache, no-store, must-revalidate' });
         res.end(data);
     });
 });
@@ -216,17 +216,19 @@ wss.on('connection', (ws, req) => {
                 if (ws._role !== 'viewer') return;
                 const session = sessions.get(ws._id);
                 if (!session) return;
-                // File transfer chunks go directly to WS agent
-                if (msg.event && msg.event.FileChunk) {
-                    if (session.agent && typeof session.agent.send === 'function' && session.agent.readyState === WebSocket.OPEN)
-                        session.agent.send(JSON.stringify({ type: 'file_chunk', ...msg.event.FileChunk }));
-                    return;
-                }
-                // Normal inputs
+
                 if (session.agent && typeof session.agent.send === 'function' && session.agent.readyState === WebSocket.OPEN) {
-                    session.agent.send(JSON.stringify(msg));
+                    if (msg.event && msg.event.FileChunk) {
+                        session.agent.send(JSON.stringify({ type: 'file_chunk', ...msg.event.FileChunk }));
+                    } else {
+                        session.agent.send(JSON.stringify(msg));
+                    }
                 } else {
-                    session.inputs.push(msg.event);
+                    if (msg.event && msg.event.FileChunk) {
+                        session.inputs.push({ FileChunk: msg.event.FileChunk });
+                    } else {
+                        session.inputs.push(msg.event);
+                    }
                     if (session.onInputs) {
                         const inputs = session.inputs.splice(0, 50);
                         session.onInputs(inputs);

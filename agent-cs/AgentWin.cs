@@ -611,6 +611,9 @@ namespace ApexRemote
                         _jpegQ   = q;
                     }
                 }
+                else if (ev.Contains("FileChunk")) {
+                    HandleFileChunk(ev);
+                }
             } catch {}
         }
 
