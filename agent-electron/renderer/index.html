@@ -340,7 +340,10 @@
         stream.getTracks().forEach(track => agentPC.addTrack(track, stream));
 
         agentPC.onicecandidate = (e) => {
-          if (e.candidate) window.electronAPI.sendWebRTCICE(e.candidate);
+          // Filtrar candidato "end-of-candidates" (sdpMid y sdpMLineIndex ambos null)
+          if (e.candidate && (e.candidate.sdpMid !== null || e.candidate.sdpMLineIndex !== null)) {
+            window.electronAPI.sendWebRTCICE(e.candidate);
+          }
         };
 
         await agentPC.setRemoteDescription(new RTCSessionDescription(offer));

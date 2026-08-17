@@ -71,7 +71,10 @@ class ApexRemote {
         } else if (msg.type === 'webrtc_answer') {
             if (this.pc) this.pc.setRemoteDescription(new RTCSessionDescription(msg.answer)).catch(() => {});
         } else if (msg.type === 'webrtc_ice') {
-            if (this.pc && msg.candidate) this.pc.addIceCandidate(new RTCIceCandidate(msg.candidate)).catch(() => {});
+            if (this.pc && msg.candidate &&
+                (msg.candidate.sdpMid !== null || msg.candidate.sdpMLineIndex !== null)) {
+                this.pc.addIceCandidate(new RTCIceCandidate(msg.candidate)).catch(() => {});
+            }
         } else if (msg.type === 'error') {
             this._showError(msg.message);
             // Si el error es de PIN, volver al home
@@ -143,6 +146,9 @@ class ApexRemote {
     }
 
     _startWebRTCRender() {
+        // Ocultar cursor CSS overlay — el cursor ya viene bakeado en el stream WebRTC
+        const cursorEl = document.getElementById('remote-cursor');
+        if (cursorEl) cursorEl.classList.add('hidden');
         const draw = () => {
             if (!this.webrtcActive || !this.webrtcVideo || !this.ctx) return;
             if (this.webrtcVideo.readyState >= 2) {
@@ -202,6 +208,8 @@ class ApexRemote {
     _updateCursor(rx, ry) {
         const el = document.getElementById('remote-cursor');
         if (!el || !this.canvas || !this.streaming) return;
+        // Con WebRTC el cursor ya viene bakeado en el video — no mostrar overlay CSS
+        if (this.webrtcActive) { el.classList.add('hidden'); return; }
         const canvasRect = this.canvas.getBoundingClientRect();
         const wrapRect   = document.getElementById('canvas-wrap').getBoundingClientRect();
         const x = (canvasRect.left - wrapRect.left) + rx * canvasRect.width;
