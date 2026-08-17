@@ -272,9 +272,9 @@ namespace ApexRemote
         Label lblFps;
 
         // ── Resolución de captura (más pequeña = más FPS) ────────────────────
-        const int CAPTURE_W = 1024;
-        const int CAPTURE_H = 576;
-        const int JPEG_Q    = 40;
+        const int CAPTURE_W = 960;
+        const int CAPTURE_H = 540;
+        const int JPEG_Q    = 30;
 
         public AgentForm(string host, string id)
         {
@@ -419,39 +419,45 @@ namespace ApexRemote
         }
 
         // Hilo SEND: captura pantalla y envía frames binarios JPEG vía WS
+        // ── Buffer compartido entre captura y envio ───────────────────────────
+        volatile byte[] _latestFrame = null;
+        readonly AutoResetEvent _frameReady = new AutoResetEvent(false);
+
         void StartWsFrameLoop()
         {
+            // HILO 1 - Captura + codifica JPEG sin esperar al envio (producer)
             new Thread(() => {
-                int frames  = 0;
-                long tsBase = DateTime.UtcNow.Ticks;
-
-                while (!_cts.IsCancellationRequested && _ws != null && _wsMode)
+                while (!_cts.IsCancellationRequested && _wsMode)
                 {
                     if (_hasViewers)
                     {
                         byte[] jpeg = CaptureScreen();
-                        if (jpeg.Length > 0)
-                        {
-                            try { _ws.SendBinary(jpeg); }
-                            catch { break; }
-
-                            frames++;
-                            long diff = DateTime.UtcNow.Ticks - tsBase;
-                            if (diff >= 10000000) {
-                                double fps = frames * 10000000.0 / diff;
-                                SetFps(string.Format("{0:0.0} FPS  ·  {1}×{2}  ·  {3}KB/frame  [WS]",
-                                    fps, CAPTURE_W, CAPTURE_H, jpeg.Length / 1024));
-                                frames = 0; tsBase = DateTime.UtcNow.Ticks;
-                            }
-                        }
-                        Thread.Sleep(33); // ~30 FPS máx
+                        if (jpeg.Length > 0) { _latestFrame = jpeg; _frameReady.Set(); }
+                        Thread.Sleep(1);
                     }
-                    else
-                    {
-                        Thread.Sleep(200);
+                    else { Thread.Sleep(100); }
+                }
+            }) { IsBackground = true, Priority = ThreadPriority.AboveNormal }.Start();
+
+            // HILO 2 - Envia el ultimo frame disponible (consumer)
+            new Thread(() => {
+                int frames = 0; long tsBase = DateTime.UtcNow.Ticks;
+                while (!_cts.IsCancellationRequested && _ws != null && _wsMode)
+                {
+                    _frameReady.WaitOne(200);
+                    byte[] frame = _latestFrame;
+                    _latestFrame = null;
+                    if (frame == null || !_hasViewers) continue;
+                    try { _ws.SendBinary(frame); } catch { break; }
+                    frames++;
+                    long diff = DateTime.UtcNow.Ticks - tsBase;
+                    if (diff >= 10000000) {
+                        double fps = frames * 10000000.0 / diff;
+                        SetFps(string.Format("{0:0.0} FPS  {1}x{2}  {3}KB  [WS]", fps, CAPTURE_W, CAPTURE_H, frame.Length / 1024));
+                        frames = 0; tsBase = DateTime.UtcNow.Ticks;
                     }
                 }
-            }) { IsBackground = true }.Start();
+            }) { IsBackground = true, Priority = ThreadPriority.Highest }.Start();
         }
 
         // ══════════════════════════════════════════════════════════════════════
@@ -683,4 +689,6 @@ namespace ApexRemote
         }
     }
 }
+
+
 
