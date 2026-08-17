@@ -272,8 +272,8 @@ class ApexRemote {
             let i = 0;
             const sendNext = () => {
                 if (i >= total) {
-                    if (label) label.textContent = '✓ ' + file.name + ' guardado en C:\\ApexRemote_Downloads';
-                    this.showToast('📁 Archivo Enviado', file.name + ' se guardó en C:\\ApexRemote_Downloads y Escritorio', '✅', 6000);
+                    if (label) label.textContent = '✓ ' + file.name + ' guardado en Descargas';
+                    this.showToast('📁 Archivo Guardado', file.name + ' se guardó en la carpeta Descargas y Escritorio', '✅', 6000);
                     if (bar)   setTimeout(() => { bar.style.width = '0%'; }, 4500);
                     return;
                 }
