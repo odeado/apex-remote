@@ -11,6 +11,10 @@ class ApexRemote {
         this.fpsLast   = performance.now();
         this._hudTimer = null;
         this._fitted   = false;
+        // Posición predicha del cursor remoto (0-1), se actualiza localmente
+        // sin esperar la vuelta por red → cursor instantáneo
+        this._cursorRx = 0.5;
+        this._cursorRy = 0.5;
 
         const wsProto = location.protocol === 'https:' ? 'wss:' : 'ws:';
         const host    = location.protocol === 'file:' ? 'localhost:8080' : location.host;
@@ -55,7 +59,8 @@ class ApexRemote {
             this._startHud();
             this._showFileBar();
             this._initWebRTC();
-            // Mostrar hint de pointer lock
+            // Mostrar hint de pointer lock y resetear posición predicha al centro
+            this._cursorRx = 0.5; this._cursorRy = 0.5;
             const lockHint = document.getElementById('pointer-lock-hint');
             if (lockHint) lockHint.classList.remove('hidden');
         } else if (msg.type === 'clipboard_sync' && msg.text) {
@@ -85,7 +90,17 @@ class ApexRemote {
         } else if (msg.type === 'file_download_chunk') {
             if (this.fileExplorer) this.fileExplorer._onDownloadChunk(msg);
         } else if (msg.type === 'cursor_pos') {
-            this._updateCursor(msg.rx, msg.ry);
+            // Corrección de drift: sincronizamos la posición real del agente
+            // pero solo si no tenemos el pointer lock (evita saltos mientras movemos)
+            if (document.pointerLockElement !== this.canvas) {
+                this._cursorRx = msg.rx;
+                this._cursorRy = msg.ry;
+                this._updateCursor(msg.rx, msg.ry);
+            } else {
+                // Con pointer lock: corrección suave para evitar drift acumulado
+                this._cursorRx += (msg.rx - this._cursorRx) * 0.15;
+                this._cursorRy += (msg.ry - this._cursorRy) * 0.15;
+            }
         }
     }
 
@@ -447,7 +462,14 @@ class ApexRemote {
             const scale = rect.width > 0 ? canvas.width / rect.width : 1;
             const dx = Math.round(e.movementX * scale);
             const dy = Math.round(e.movementY * scale);
-            if (dx !== 0 || dy !== 0) this._sendInput({ MouseMoveDelta: { dx, dy } });
+            if (dx === 0 && dy === 0) return;
+            // 1) Enviar delta al agente remoto
+            this._sendInput({ MouseMoveDelta: { dx, dy } });
+            // 2) Mover el cursor overlay LOCAL inmediatamente (0 latencia)
+            //    No esperamos la vuelta por red — predicción instantánea
+            this._cursorRx = Math.max(0, Math.min(1, this._cursorRx + dx / (canvas.width  || 1280)));
+            this._cursorRy = Math.max(0, Math.min(1, this._cursorRy + dy / (canvas.height || 720)));
+            this._updateCursor(this._cursorRx, this._cursorRy);
         });
 
         canvas.addEventListener('mousedown',   e => { e.preventDefault(); if (this.streaming) this._sendInput({ MouseDown: { button: ['Left','Middle','Right'][e.button] || 'Left' } }); });
