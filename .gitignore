@@ -2,3 +2,5 @@ node_modules/
 target/
 .system_generated/
 *.log
+rustdesk-1.4.9/
+dist/
