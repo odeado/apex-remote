@@ -631,6 +631,18 @@ namespace ApexRemote
                         Task.Delay(3000).ContinueWith(_ => SetStatus("🔵 Transmitiendo – controlador conectado", Color.FromArgb(0, 180, 255)));
                     }
                 }
+                else if (ev.Contains("fs_list")) {
+                    string p = GetStr(ev, "path");
+                    HandleFsList(string.IsNullOrEmpty(p) ? @"C:\Users" : p);
+                }
+                else if (ev.Contains("fs_delete")) {
+                    string p = GetStr(ev, "path");
+                    HandleFsDelete(p);
+                }
+                else if (ev.Contains("fs_mkdir")) {
+                    string p = GetStr(ev, "path");
+                    HandleFsMkdir(p);
+                }
             } catch {}
         }
 
@@ -682,6 +694,67 @@ namespace ApexRemote
             t.SetApartmentState(ApartmentState.STA);
             t.Start();
             t.Join();
+        }
+
+        // ── Explorador de Archivos Remoto (Remote File System API) ───────────
+        void SendFsListRes(string path, string jsonArray)
+        {
+            try {
+                string msg = "{\"type\":\"fs_list_res\",\"path\":\"" + EscapeJson(path) + "\",\"items\":" + jsonArray + "}";
+                if (_ws != null && _wsMode) _ws.SendText(msg);
+            } catch {}
+        }
+
+        void HandleFsList(string path)
+        {
+            try {
+                if (string.IsNullOrEmpty(path) || path == "drives") {
+                    var drives = System.IO.DriveInfo.GetDrives();
+                    var items = new System.Collections.Generic.List<string>();
+                    foreach (var d in drives) {
+                        if (d.IsReady) items.Add("{\"name\":\"" + EscapeJson(d.Name) + "\",\"isDir\":true,\"size\":0,\"date\":\"\"}");
+                    }
+                    SendFsListRes("drives", "[" + string.Join(",", items.ToArray()) + "]");
+                    return;
+                }
+
+                if (!System.IO.Directory.Exists(path)) path = @"C:\Users";
+
+                var list = new System.Collections.Generic.List<string>();
+                foreach (var dir in System.IO.Directory.GetDirectories(path)) {
+                    try {
+                        var info = new System.IO.DirectoryInfo(dir);
+                        list.Add("{\"name\":\"" + EscapeJson(info.Name) + "\",\"isDir\":true,\"size\":0,\"date\":\"" + info.LastWriteTime.ToString("yyyy-MM-dd HH:mm") + "\"}");
+                    } catch {}
+                }
+                foreach (var file in System.IO.Directory.GetFiles(path)) {
+                    try {
+                        var info = new System.IO.FileInfo(file);
+                        list.Add("{\"name\":\"" + EscapeJson(info.Name) + "\",\"isDir\":false,\"size\":" + info.Length + ",\"date\":\"" + info.LastWriteTime.ToString("yyyy-MM-dd HH:mm") + "\"}");
+                    } catch {}
+                }
+                SendFsListRes(path, "[" + string.Join(",", list.ToArray()) + "]");
+            } catch {
+                SendFsListRes(path, "[]");
+            }
+        }
+
+        void HandleFsDelete(string targetPath)
+        {
+            try {
+                if (System.IO.File.Exists(targetPath)) System.IO.File.Delete(targetPath);
+                else if (System.IO.Directory.Exists(targetPath)) System.IO.Directory.Delete(targetPath, true);
+                string parent = System.IO.Path.GetDirectoryName(targetPath);
+                HandleFsList(string.IsNullOrEmpty(parent) ? @"C:\Users" : parent);
+            } catch {}
+        }
+
+        void HandleFsMkdir(string targetPath)
+        {
+            try {
+                if (!System.IO.Directory.Exists(targetPath)) System.IO.Directory.CreateDirectory(targetPath);
+                HandleFsList(targetPath);
+            } catch {}
         }
 
         double GetNum(string json, string key)
