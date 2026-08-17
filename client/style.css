@@ -382,6 +382,13 @@ html, body {
     transition: background .15s;
 }
 .recent-connect:hover { background: rgba(0,229,255,.2); }
+.recent-actions { display: flex; align-items: center; gap: 4px; }
+.recent-action-btn {
+    background: transparent; border: none; font-size: 12px; cursor: pointer;
+    padding: 3px 5px; border-radius: 4px; opacity: .7; transition: opacity .15s, background .15s;
+}
+.recent-action-btn:hover { opacity: 1; background: rgba(255,255,255,.1); }
+.recent-action-btn.danger:hover { background: rgba(255,60,60,.25); }
 .no-recent { font-size: 12px; color: var(--text-muted); padding: 8px 0; }
 
 /* File transfer bar */

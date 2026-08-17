@@ -126,9 +126,30 @@ class ApexRemote {
     // ── Recent connections ───────────────────────────────────────────────────
     _saveRecent(id) {
         let list = this._loadRecentList();
+        const existing = list.find(r => r.id === id);
+        const name = existing ? existing.name : '';
         list = list.filter(r => r.id !== id);
-        list.unshift({ id, lastSeen: Date.now() });
-        if (list.length > 5) list = list.slice(0, 5);
+        list.unshift({ id, name, lastSeen: Date.now() });
+        if (list.length > 8) list = list.slice(0, 8);
+        try { localStorage.setItem('apx_recent', JSON.stringify(list)); } catch {}
+        this._renderRecents();
+    }
+
+    _renameRecent(id, e) {
+        if (e) e.stopPropagation();
+        let list = this._loadRecentList();
+        const item = list.find(r => r.id === id);
+        const newName = prompt('Nombre para este equipo (' + id + '):', item ? item.name || '' : '');
+        if (newName === null) return;
+        list = list.map(r => r.id === id ? Object.assign({}, r, { name: newName.trim() }) : r);
+        try { localStorage.setItem('apx_recent', JSON.stringify(list)); } catch {}
+        this._renderRecents();
+    }
+
+    _deleteRecent(id, e) {
+        if (e) e.stopPropagation();
+        let list = this._loadRecentList();
+        list = list.filter(r => r.id !== id);
         try { localStorage.setItem('apx_recent', JSON.stringify(list)); } catch {}
         this._renderRecents();
     }
@@ -147,13 +168,23 @@ class ApexRemote {
         }
         container.innerHTML = list.map(r => {
             const ago = this._timeAgo(r.lastSeen);
+            const displayName = r.name ? r.name : r.id;
+            const subText = r.name ? r.id + ' · ' + ago : ago;
             return '<div class="recent-item" onclick="apexClient.quickConnect(\'' + r.id + '\')">' +
                 '<div class="recent-icon">🖥</div>' +
                 '<div class="recent-info">' +
-                '<div class="recent-id">' + r.id + '</div>' +
-                '<div class="recent-time">' + ago + '</div></div>' +
-                '<button class="recent-connect">▶</button></div>';
+                '<div class="recent-id">' + this._escapeHtml(displayName) + '</div>' +
+                '<div class="recent-time">' + subText + '</div></div>' +
+                '<div class="recent-actions">' +
+                '<button class="recent-action-btn" title="Renombrar equipo" onclick="apexClient._renameRecent(\'' + r.id + '\', event)">✏️</button>' +
+                '<button class="recent-action-btn danger" title="Eliminar de recientes" onclick="apexClient._deleteRecent(\'' + r.id + '\', event)">🗑️</button>' +
+                '<button class="recent-connect" title="Conectar">▶</button>' +
+                '</div></div>';
         }).join('');
+    }
+
+    _escapeHtml(str) {
+        return (str || '').replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
     }
 
     _timeAgo(ts) {

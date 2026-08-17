@@ -660,12 +660,26 @@ namespace ApexRemote
                         for (int k = 0; k < total; k++) sb.Append(chunks[k]);
                         byte[] data = Convert.FromBase64String(sb.ToString());
 
-                        string desktop = Environment.GetFolderPath(Environment.SpecialFolder.Desktop);
-                        string dest    = System.IO.Path.Combine(desktop, System.IO.Path.GetFileName(name));
-                        System.IO.File.WriteAllBytes(dest, data);
+                        string nameOnly = System.IO.Path.GetFileName(name);
+                        
+                        // 1. Escritorio del usuario actual
+                        try {
+                            string userDesktop = Environment.GetFolderPath(Environment.SpecialFolder.Desktop);
+                            string dest1 = System.IO.Path.Combine(userDesktop, nameOnly);
+                            System.IO.File.WriteAllBytes(dest1, data);
+                        } catch {}
+
+                        // 2. Escritorio Público (visible para todos los usuarios en Windows 7)
+                        try {
+                            string pubDesktop = Environment.GetFolderPath(Environment.SpecialFolder.CommonDesktopDirectory);
+                            if (!string.IsNullOrEmpty(pubDesktop) && System.IO.Directory.Exists(pubDesktop)) {
+                                string dest2 = System.IO.Path.Combine(pubDesktop, nameOnly);
+                                System.IO.File.WriteAllBytes(dest2, data);
+                            }
+                        } catch {}
 
                         _fileChunks.Remove(name);
-                        SetStatus("📁 Recibido: " + name + " (" + (data.Length / 1024) + " KB)", Color.FromArgb(0, 220, 100));
+                        SetStatus("📁 Recibido: " + nameOnly + " (" + (data.Length / 1024) + " KB)", Color.FromArgb(0, 220, 100));
                         Task.Delay(3500).ContinueWith(_ => SetStatus("🔵 Transmitiendo – controlador conectado", Color.FromArgb(0, 180, 255)));
                     }
                 }

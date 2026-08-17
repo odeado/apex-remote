@@ -9,7 +9,7 @@
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
-    <link rel="stylesheet" href="style.css?v=5">
+    <link rel="stylesheet" href="style.css?v=6">
 </head>
 <body>
 <div id="app">
@@ -74,6 +74,7 @@
                 <span class="hud-id" id="viewer-id-display"></span>
             </div>
             <div class="hud-center">
+                <div class="hud-stat"><span class="hud-label">FPS</span><span id="hud-fps">—</span></div>
                 <div class="hud-stat">
                     <span class="hud-label">CALIDAD</span>
                     <select id="quality-select" class="hud-select">
@@ -111,7 +112,7 @@
     </div>
 
 </div>
-<script src="app.js?v=5"></script>
+<script src="app.js?v=6"></script>
 <script>
 const obs = new MutationObserver(() => {
     const d2 = document.getElementById('status-dot2');
