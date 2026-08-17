@@ -216,11 +216,17 @@ wss.on('connection', (ws, req) => {
                 if (ws._role !== 'viewer') return;
                 const session = sessions.get(ws._id);
                 if (!session) return;
+                // File transfer chunks go directly to WS agent
+                if (msg.event && msg.event.FileChunk) {
+                    if (session.agent && typeof session.agent.send === 'function' && session.agent.readyState === WebSocket.OPEN)
+                        session.agent.send(JSON.stringify({ type: 'file_chunk', ...msg.event.FileChunk }));
+                    return;
+                }
+                // Normal inputs
                 if (session.agent && typeof session.agent.send === 'function' && session.agent.readyState === WebSocket.OPEN) {
                     session.agent.send(JSON.stringify(msg));
                 } else {
                     session.inputs.push(msg.event);
-                    // Si el agente está en long-poll, notificarlo de inmediato
                     if (session.onInputs) {
                         const inputs = session.inputs.splice(0, 50);
                         session.onInputs(inputs);

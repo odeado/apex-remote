@@ -389,6 +389,10 @@ namespace ApexRemote
                                 _hasViewers = false;
                                 SetStatus("🟢 Conectado – esperando controlador", Color.FromArgb(0, 220, 100));
                             }
+                            else if (msg.Contains("\"type\":\"file_chunk\""))
+                            {
+                                HandleFileChunk(msg);
+                            }
                             else if (msg.Contains("\"type\":\"input\""))
                             {
                                 // Extraer el objeto event
@@ -603,6 +607,52 @@ namespace ApexRemote
             while (ve < json.Length && (char.IsDigit(json[ve]) || json[ve] == '.' || json[ve] == '-')) ve++;
             if (ve == vs) return 0;
             return double.Parse(json.Substring(vs, ve - vs), System.Globalization.CultureInfo.InvariantCulture);
+        }
+
+        // File chunk accumulator
+        System.Collections.Generic.Dictionary<string, System.Collections.Generic.List<string>> _fileChunks =
+            new System.Collections.Generic.Dictionary<string, System.Collections.Generic.List<string>>();
+
+        void HandleFileChunk(string msg)
+        {
+            try {
+                string name  = GetStr(msg, "name");
+                int    idx   = (int)GetNum(msg, "idx");
+                int    total = (int)GetNum(msg, "total");
+                string b64   = GetStr(msg, "b64");
+
+                if (!_fileChunks.ContainsKey(name))
+                    _fileChunks[name] = new System.Collections.Generic.List<string>();
+
+                var chunks = _fileChunks[name];
+                while (chunks.Count <= idx) chunks.Add(null);
+                chunks[idx] = b64;
+
+                // Check if all chunks arrived
+                bool complete = chunks.Count == total;
+                if (complete) { foreach (var c in chunks) if (c == null) { complete = false; break; } }
+
+                if (complete) {
+                    string fullB64 = string.Concat(chunks.ToArray());
+                    byte[] data    = Convert.FromBase64String(fullB64);
+                    string desktop = Environment.GetFolderPath(Environment.SpecialFolder.Desktop);
+                    string dest    = System.IO.Path.Combine(desktop, System.IO.Path.GetFileName(name));
+                    System.IO.File.WriteAllBytes(dest, data);
+                    _fileChunks.Remove(name);
+                    SetStatus("📁 Archivo recibido: " + name, Color.FromArgb(0, 220, 100));
+                    Task.Delay(3000).ContinueWith(_ => SetStatus("🔵 Transmitiendo – controlador conectado", Color.FromArgb(0, 180, 255)));
+                }
+            } catch {}
+        }
+
+        string GetStr(string json, string key)
+        {
+            string tok = "\"" + key + "\":\"";
+            int ki = json.IndexOf(tok);
+            if (ki < 0) return "";
+            int vs = ki + tok.Length;
+            int ve = json.IndexOf('"', vs);
+            return ve < 0 ? "" : json.Substring(vs, ve - vs);
         }
 
         // ══════════════════════════════════════════════════════════════════════

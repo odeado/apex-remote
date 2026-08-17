@@ -5,7 +5,6 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
     <meta name="mobile-web-app-capable" content="yes">
     <meta name="apple-mobile-web-app-capable" content="yes">
-    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
     <title>ApexRemote — Control Remoto</title>
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -13,121 +12,111 @@
     <link rel="stylesheet" href="style.css">
 </head>
 <body>
-    <div id="app">
+<div id="app">
 
-        <!-- ── Pantalla de Inicio ─────────────────────────────────────── -->
-        <div id="screen-home" class="screen active">
-            <div class="home-layout">
-
-                <aside class="sidebar">
-                    <div class="brand">
-                        <span class="brand-icon">⚡</span>
-                        <div>
-                            <div class="brand-name">Apex<span>Remote</span></div>
-                            <div class="brand-sub">Ultra Low-Latency</div>
+    <!-- HOME -->
+    <div id="screen-home" class="screen active">
+        <div class="home-layout">
+            <aside class="sidebar">
+                <div class="brand">
+                    <span class="brand-icon">⚡</span>
+                    <div>
+                        <div class="brand-name">Apex<span>Remote</span></div>
+                        <div class="brand-sub">Ultra Low-Latency</div>
+                    </div>
+                </div>
+                <div class="this-device-card">
+                    <div class="card-label">Este Dispositivo</div>
+                    <div class="this-device-name" id="local-hostname">Controlador Web</div>
+                    <div class="connection-status">
+                        <span class="status-dot" id="status-dot"></span>
+                        <span id="status-text">Conectando...</span>
+                    </div>
+                </div>
+                <div class="sidebar-section">
+                    <div class="section-label">Recientes</div>
+                    <div id="recent-list"><p class="no-recent">Sin conexiones recientes</p></div>
+                </div>
+                <nav class="sidebar-nav">
+                    <button class="nav-btn active">🔌 Conectar</button>
+                </nav>
+            </aside>
+            <main class="home-main">
+                <div class="home-content">
+                    <h1>Nueva Conexión Remota</h1>
+                    <p class="subtitle">Ingresa el ID de 6 dígitos que aparece en el equipo remoto.</p>
+                    <div class="connect-card">
+                        <label class="field-label" for="remote-id-input">ID del Equipo Remoto</label>
+                        <div class="id-input-row">
+                            <input type="text" id="remote-id-input" class="id-input" placeholder="591758" maxlength="6" inputmode="numeric" autocomplete="off">
+                            <button id="btn-connect" class="btn-connect">Conectar <span class="btn-icon">⚡</span></button>
+                        </div>
+                        <div id="connect-error" class="connect-error hidden"></div>
+                    </div>
+                    <div class="recent-section">
+                        <h3>Estado del servidor</h3>
+                        <div class="connection-status" style="gap:8px;font-size:13px;">
+                            <span class="status-dot" id="status-dot2"></span>
+                            <span id="status-text2">Verificando...</span>
                         </div>
                     </div>
+                </div>
+            </main>
+        </div>
+    </div>
 
-                    <div class="this-device-card">
-                        <div class="card-label">Este Dispositivo</div>
-                        <div class="this-device-name" id="local-hostname">Mi PC</div>
-                        <div class="connection-status">
-                            <span class="status-dot" id="status-dot"></span>
-                            <span id="status-text">Conectando al servidor...</span>
-                        </div>
-                    </div>
-
-                    <nav class="sidebar-nav">
-                        <button class="nav-btn active">🔌 Conectar</button>
-                    </nav>
-                </aside>
-
-                <main class="home-main">
-                    <div class="home-content">
-                        <h1>Nueva Conexión Remota</h1>
-                        <p class="subtitle">Ingresa el ID de 6 dígitos que aparece en el equipo remoto.</p>
-
-                        <div class="connect-card">
-                            <label class="field-label" for="remote-id-input">ID del Equipo Remoto</label>
-                            <div class="id-input-row">
-                                <input
-                                    type="text"
-                                    id="remote-id-input"
-                                    class="id-input"
-                                    placeholder="849302"
-                                    maxlength="6"
-                                    inputmode="numeric"
-                                    autocomplete="off"
-                                >
-                                <button id="btn-connect" class="btn-connect">
-                                    Conectar <span class="btn-icon">⚡</span>
-                                </button>
-                            </div>
-                            <div id="connect-error" class="connect-error hidden"></div>
-                        </div>
-
-                        <div class="recent-section">
-                            <h3>Estado del servidor</h3>
-                            <div class="connection-status" style="gap:8px;font-size:13px;">
-                                <span class="status-dot" id="status-dot2"></span>
-                                <span id="status-text2">Verificando conexión...</span>
-                            </div>
-                        </div>
-                    </div>
-                </main>
-
+    <!-- VIEWER -->
+    <div id="screen-viewer" class="screen">
+        <div class="viewer-hud">
+            <div class="hud-left">
+                <span class="hud-dot active"></span>
+                <span id="viewer-hostname">Equipo Remoto</span>
+                <span class="hud-id" id="viewer-id-display"></span>
+            </div>
+            <div class="hud-center">
+                <div class="hud-stat"><span class="hud-label">FPS</span><span id="hud-fps">—</span></div>
+                <div class="hud-stat"><span class="hud-label">CALIDAD</span><span id="hud-quality">JPEG</span></div>
+            </div>
+            <div class="hud-right">
+                <button id="btn-file" class="hud-btn" title="Enviar archivo al equipo remoto" onclick="document.getElementById('file-input').click()">📁 Archivo</button>
+                <input type="file" id="file-input" style="display:none">
+                <button id="btn-fullscreen" class="hud-btn" title="Pantalla completa">⛶</button>
+                <button id="btn-disconnect" class="hud-btn danger">✕ Salir</button>
             </div>
         </div>
-
-        <!-- ── Pantalla del Visor Remoto ────────────────────────────────── -->
-        <div id="screen-viewer" class="screen">
-            <div class="viewer-hud">
-                <div class="hud-left">
-                    <span class="hud-dot active" id="viewer-dot"></span>
-                    <span id="viewer-hostname">Equipo Remoto</span>
-                    <span class="hud-id" id="viewer-id-display"></span>
-                </div>
-                <div class="hud-center">
-                    <div class="hud-stat"><span class="hud-label">FPS</span><span id="hud-fps">—</span></div>
-                    <div class="hud-stat"><span class="hud-label">CALIDAD</span><span id="hud-quality">JPEG</span></div>
-                </div>
-                <div class="hud-right">
-                    <button id="btn-fullscreen" class="hud-btn" title="Pantalla completa">⛶</button>
-                    <button id="btn-disconnect" class="hud-btn danger">✕ Salir</button>
-                </div>
+        <!-- File transfer progress strip -->
+        <div id="file-transfer-bar" class="file-bar hidden">
+            <span id="file-label">Arrastra o selecciona un archivo</span>
+            <div class="file-progress-track"><div id="file-progress" class="file-progress-fill"></div></div>
+        </div>
+        <div class="viewer-canvas-wrap" id="canvas-wrap">
+            <canvas id="remote-canvas"></canvas>
+            <div class="viewer-overlay" id="viewer-overlay">
+                <div class="overlay-spinner"></div>
+                <p id="overlay-text">Conectando...</p>
             </div>
-
-            <div class="viewer-canvas-wrap" id="canvas-wrap">
-                <canvas id="remote-canvas"></canvas>
-                <div class="viewer-overlay" id="viewer-overlay">
-                    <div class="overlay-spinner"></div>
-                    <p id="overlay-text">Conectando...</p>
-                </div>
-
-                <!-- Controles táctiles para móvil/tablet -->
-                <div class="touch-controls" id="touch-controls">
-                    <button class="touch-btn" id="touch-scroll-up"   title="Scroll arriba">↑</button>
-                    <button class="touch-btn" id="touch-lclick"      title="Clic izquierdo">👆</button>
-                    <button class="touch-btn" id="touch-rclick"      title="Clic derecho">☰</button>
-                    <button class="touch-btn" id="touch-scroll-down" title="Scroll abajo">↓</button>
-                </div>
+            <div class="touch-controls" id="touch-controls">
+                <button class="touch-btn" id="touch-scroll-up">↑</button>
+                <button class="touch-btn" id="touch-lclick">👆</button>
+                <button class="touch-btn" id="touch-rclick">☰</button>
+                <button class="touch-btn" id="touch-scroll-down">↓</button>
             </div>
         </div>
+    </div>
 
-    </div><!-- #app -->
-
-    <script src="app.js"></script>
-    <script>
-        // Sincronizar los 2 indicadores de estado
-        const obs = new MutationObserver(() => {
-            const dot2 = document.getElementById('status-dot2');
-            const txt2 = document.getElementById('status-text2');
-            const dot1 = document.getElementById('status-dot');
-            const txt1 = document.getElementById('status-text');
-            if (dot2 && dot1) dot2.className = dot1.className;
-            if (txt2 && txt1) txt2.textContent = txt1.textContent;
-        });
-        obs.observe(document.getElementById('status-dot') || document.body, { attributes: true, childList: true, subtree: true, characterData: true });
-    </script>
+</div>
+<script src="app.js"></script>
+<script>
+const obs = new MutationObserver(() => {
+    const d2 = document.getElementById('status-dot2');
+    const t2 = document.getElementById('status-text2');
+    const d1 = document.getElementById('status-dot');
+    const t1 = document.getElementById('status-text');
+    if (d2 && d1) d2.className = d1.className;
+    if (t2 && t1) t2.textContent = t1.textContent;
+});
+const el = document.getElementById('status-dot');
+if (el) obs.observe(el.parentElement, { attributes: true, childList: true, subtree: true, characterData: true });
+</script>
 </body>
 </html>

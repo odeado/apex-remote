@@ -244,8 +244,6 @@ html, body {
 }
 
 #remote-canvas {
-    max-width: 100%;
-    max-height: 100%;
     display: block;
     cursor: none;
     touch-action: none;
@@ -344,4 +342,49 @@ html, body {
 
 @media (min-width: 701px) {
     .touch-controls { display: none !important; }
+}
+
+/* Recent connections in sidebar */
+.sidebar-section { display: flex; flex-direction: column; gap: 8px; }
+.section-label { font-size: 10px; text-transform: uppercase; letter-spacing: .8px; color: var(--text-muted); }
+.recent-item {
+    display: flex; align-items: center; gap: 10px;
+    padding: 10px 12px; border-radius: var(--radius-sm);
+    border: 1px solid var(--border); cursor: pointer;
+    transition: border-color .2s, background .2s;
+    background: var(--bg-card);
+}
+.recent-item:hover { border-color: rgba(0,229,255,.3); background: var(--accent-dim); }
+.recent-icon { font-size: 18px; flex-shrink: 0; }
+.recent-info { flex: 1; min-width: 0; }
+.recent-id { font-family: var(--mono); font-size: 14px; font-weight: 600; }
+.recent-time { font-size: 10px; color: var(--text-muted); margin-top: 2px; }
+.recent-connect {
+    background: var(--accent-dim); border: 1px solid rgba(0,229,255,.2);
+    color: var(--accent); padding: 4px 10px; border-radius: 6px;
+    font-size: 11px; font-weight: 600; cursor: pointer; white-space: nowrap;
+    transition: background .15s;
+}
+.recent-connect:hover { background: rgba(0,229,255,.2); }
+.no-recent { font-size: 12px; color: var(--text-muted); padding: 8px 0; }
+
+/* File transfer bar */
+.file-bar {
+    flex-shrink: 0;
+    background: rgba(0,229,255,.06);
+    border-bottom: 1px solid var(--border);
+    padding: 6px 16px;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    font-size: 12px;
+    color: var(--text-muted);
+}
+.file-bar.hidden { display: none; }
+.file-progress-track {
+    flex: 1; height: 4px; background: var(--border); border-radius: 2px; overflow: hidden;
+}
+.file-progress-fill {
+    height: 100%; width: 0%; background: var(--accent);
+    transition: width .1s; border-radius: 2px;
 }
