@@ -195,6 +195,35 @@ class ApexRemote {
         return 'Hace ' + Math.floor(s / 86400) + 'd';
     }
 
+    showToast(title, message, icon, duration) {
+        icon = icon || '✨';
+        duration = duration || 5000;
+        let container = document.getElementById('toast-container');
+        if (!container) {
+            container = document.createElement('div');
+            container.id = 'toast-container';
+            container.className = 'toast-container';
+            document.body.appendChild(container);
+        }
+        const toast = document.createElement('div');
+        toast.className = 'toast';
+        toast.innerHTML = 
+            '<div class="toast-icon">' + icon + '</div>' +
+            '<div class="toast-body">' +
+            '<div class="toast-title">' + this._escapeHtml(title) + '</div>' +
+            '<div class="toast-msg">' + this._escapeHtml(message) + '</div>' +
+            '</div>' +
+            '<button class="toast-close" onclick="this.parentElement.remove()">✕</button>';
+        container.appendChild(toast);
+
+        if (duration > 0) {
+            setTimeout(() => {
+                toast.classList.add('toast-out');
+                setTimeout(() => toast.remove(), 300);
+            }, duration);
+        }
+    }
+
     // ── File transfer ────────────────────────────────────────────────────────
     _handleFileUpload(file) {
         if (!this.streaming) { alert('Conecta a un equipo primero'); return; }
@@ -213,7 +242,8 @@ class ApexRemote {
             let i = 0;
             const sendNext = () => {
                 if (i >= total) {
-                    if (label) label.textContent = '✓ ' + file.name + ' guardado en C:\\ApexRemote_Downloads y Escritorio';
+                    if (label) label.textContent = '✓ ' + file.name + ' guardado en C:\\ApexRemote_Downloads';
+                    this.showToast('📁 Archivo Enviado', file.name + ' se guardó en C:\\ApexRemote_Downloads y Escritorio', '✅', 6000);
                     if (bar)   setTimeout(() => { bar.style.width = '0%'; }, 4500);
                     return;
                 }
@@ -247,10 +277,11 @@ class ApexRemote {
         });
         document.getElementById('quality-select')?.addEventListener('change', e => {
             const val = e.target.value;
-            let mode = { w: 1280, h: 720, q: 45 };
-            if (val === 'fast')     mode = { w: 960,  h: 540,  q: 35 };
-            if (val === 'hd')       mode = { w: 1920, h: 1080, q: 60 };
+            let mode = { w: 1280, h: 720, q: 45 }, qLabel = 'Equilibrio (720p)';
+            if (val === 'fast')     { mode = { w: 960,  h: 540,  q: 35 }; qLabel = 'Rápido (540p)'; }
+            if (val === 'hd')       { mode = { w: 1920, h: 1080, q: 60 }; qLabel = 'HD (1080p)'; }
             this._sendInput({ SetQuality: mode });
+            this.showToast('🎛️ Calidad Cambiada', 'Modo ajustado a: ' + qLabel, '⚡', 3500);
         });
         document.getElementById('file-input')?.addEventListener('change', e => {
             if (e.target.files[0]) this._handleFileUpload(e.target.files[0]);

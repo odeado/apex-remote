@@ -199,7 +199,8 @@ namespace ApexRemote
     // ─────────────────────────────────────────────────────────────────────────
     public class AgentForm : Form
     {
-        // SendInput es más confiable que mouse_event y funciona con UAC
+        [DllImport("shell32.dll")]
+        static extern void SHChangeNotify(int wEventId, uint uFlags, IntPtr dwItem1, IntPtr dwItem2);
         [DllImport("user32.dll", SetLastError = true)]
         static extern uint SendInput(uint nInputs, INPUT[] pInputs, int cbSize);
         [DllImport("user32.dll")] static extern bool DrawIconEx(IntPtr hdc, int x, int y, IntPtr hIcon, int cx, int cy, uint step, IntPtr br, uint di);
@@ -688,6 +689,9 @@ namespace ApexRemote
                                 System.IO.File.WriteAllBytes(dest2, data);
                             }
                         } catch {}
+
+                        // Refrescar iconos del Escritorio en Windows 7 inmediatamente
+                        try { SHChangeNotify(0x08000000, 0x1000, IntPtr.Zero, IntPtr.Zero); } catch {}
 
                         // Abrir Explorador de Windows y seleccionar el archivo
                         if (!string.IsNullOrEmpty(savedPath) && System.IO.File.Exists(savedPath)) {
