@@ -137,13 +137,18 @@ function handleInput(event) {
     try {
         const disp = eScreen.getPrimaryDisplay().bounds;
 
-        if (event.MouseMove) {
-            // El cliente envía rx/ry (0-1 relativo al canvas)
-            const rx = event.MouseMove.rx || event.MouseMove.x || 0;
-            const ry = event.MouseMove.ry || event.MouseMove.y || 0;
-            const ax = Math.round(rx * disp.width);
-            const ay = Math.round(ry * disp.height);
-            robot.moveMouse(ax, ay);
+        if (event.MouseMoveDelta) {
+            // Modo Pointer Lock: delta relativo desde el viewer
+            const pt = eScreen.getCursorScreenPoint();
+            const nx = Math.max(0, Math.min(disp.width  - 1, pt.x + event.MouseMoveDelta.dx));
+            const ny = Math.max(0, Math.min(disp.height - 1, pt.y + event.MouseMoveDelta.dy));
+            robot.moveMouse(nx, ny);
+
+        } else if (event.MouseMove) {
+            // Fallback modo absoluto (touch desde móvil)
+            const rx = event.MouseMove.rx || 0;
+            const ry = event.MouseMove.ry || 0;
+            robot.moveMouse(Math.round(rx * disp.width), Math.round(ry * disp.height));
 
         } else if (event.MouseDown) {
             robot.mouseToggle('down', (event.MouseDown.button || 'Left').toLowerCase());

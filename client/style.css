@@ -304,6 +304,61 @@ html, body {
 }
 @keyframes spin { to { transform: rotate(360deg); } }
 
+/* ── Pointer Lock hints ──────────────────────────────────────────────────── */
+.pointer-lock-hint {
+    position: absolute;
+    bottom: 18px;
+    left: 50%;
+    transform: translateX(-50%);
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    background: rgba(0,0,0,0.72);
+    border: 1px solid rgba(255,255,255,0.12);
+    color: rgba(255,255,255,0.85);
+    font-size: 13px;
+    font-weight: 500;
+    padding: 8px 16px;
+    border-radius: 20px;
+    pointer-events: none;
+    backdrop-filter: blur(6px);
+    white-space: nowrap;
+    animation: fadeInUp 0.3s ease;
+    z-index: 7;
+}
+
+.pointer-lock-esc {
+    position: absolute;
+    top: 10px;
+    left: 50%;
+    transform: translateX(-50%);
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    background: rgba(0,0,0,0.55);
+    color: rgba(255,255,255,0.6);
+    font-size: 11px;
+    padding: 4px 12px;
+    border-radius: 12px;
+    pointer-events: none;
+    white-space: nowrap;
+    z-index: 7;
+}
+
+.pointer-lock-esc kbd {
+    background: rgba(255,255,255,0.15);
+    border: 1px solid rgba(255,255,255,0.2);
+    border-radius: 4px;
+    padding: 1px 6px;
+    font-family: inherit;
+    font-size: 11px;
+}
+
+@keyframes fadeInUp {
+    from { opacity: 0; transform: translateX(-50%) translateY(6px); }
+    to   { opacity: 1; transform: translateX(-50%) translateY(0); }
+}
+
 /* ── TOUCH CONTROLS (móvil/tablet) ──────────────────────────────────────── */
 .touch-controls {
     display: none;

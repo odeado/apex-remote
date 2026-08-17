@@ -55,6 +55,9 @@ class ApexRemote {
             this._startHud();
             this._showFileBar();
             this._initWebRTC();
+            // Mostrar hint de pointer lock
+            const lockHint = document.getElementById('pointer-lock-hint');
+            if (lockHint) lockHint.classList.remove('hidden');
         } else if (msg.type === 'clipboard_sync' && msg.text) {
             if (navigator.clipboard && navigator.clipboard.writeText) {
                 navigator.clipboard.writeText(msg.text).catch(() => {});
@@ -139,6 +142,10 @@ class ApexRemote {
         if (this.fileExplorer) this.fileExplorer.hide();
         const cursor = document.getElementById('remote-cursor');
         if (cursor) cursor.classList.add('hidden');
+        // Liberar pointer lock y ocultar hints
+        if (document.pointerLockElement) document.exitPointerLock();
+        document.getElementById('pointer-lock-hint')?.classList.add('hidden');
+        document.getElementById('pointer-lock-esc')?.classList.add('hidden');
     }
 
     _updateCursor(rx, ry) {
@@ -416,19 +423,42 @@ class ApexRemote {
 
         const canvas = this.canvas;
         if (!canvas) return;
-        let lastMove = 0;
-        canvas.addEventListener('mousemove', e => {
-            const now = performance.now();
-            if (now - lastMove < 25) return;
-            lastMove = now;
-            this._sendInput({ MouseMove: this._coords(e) });
+
+        // ── Pointer Lock: mouse virtual (igual que AnyDesk/TeamViewer) ────────
+        // Al hacer click en el canvas se captura el cursor — desaparece localmente
+        // y los movimientos se envían como deltas al equipo remoto.
+        canvas.addEventListener('click', () => {
+            if (!this.streaming) return;
+            if (document.pointerLockElement !== canvas) canvas.requestPointerLock();
         });
-        canvas.addEventListener('mousedown',   e => { e.preventDefault(); this._sendInput({ MouseDown: { button: ['Left','Middle','Right'][e.button] || 'Left' } }); });
-        canvas.addEventListener('mouseup',     e => this._sendInput({ MouseUp: { button: ['Left','Middle','Right'][e.button] || 'Left' } }));
+
+        document.addEventListener('pointerlockchange', () => {
+            const locked = document.pointerLockElement === canvas;
+            const lockHint = document.getElementById('pointer-lock-hint');
+            const escHint  = document.getElementById('pointer-lock-esc');
+            if (lockHint) lockHint.classList.toggle('hidden', locked);
+            if (escHint)  escHint.classList.toggle('hidden', !locked);
+        });
+
+        // Movimiento: delta puro, escalado a píxeles del escritorio remoto
+        document.addEventListener('mousemove', e => {
+            if (!this.streaming || document.pointerLockElement !== canvas) return;
+            const rect  = canvas.getBoundingClientRect();
+            const scale = rect.width > 0 ? canvas.width / rect.width : 1;
+            const dx = Math.round(e.movementX * scale);
+            const dy = Math.round(e.movementY * scale);
+            if (dx !== 0 || dy !== 0) this._sendInput({ MouseMoveDelta: { dx, dy } });
+        });
+
+        canvas.addEventListener('mousedown',   e => { e.preventDefault(); if (this.streaming) this._sendInput({ MouseDown: { button: ['Left','Middle','Right'][e.button] || 'Left' } }); });
+        canvas.addEventListener('mouseup',     e => { if (this.streaming) this._sendInput({ MouseUp: { button: ['Left','Middle','Right'][e.button] || 'Left' } }); });
         canvas.addEventListener('contextmenu', e => e.preventDefault());
-        canvas.addEventListener('wheel',       e => { e.preventDefault(); this._sendInput({ MouseScroll: { delta_y: Math.round(e.deltaY) } }); }, { passive: false });
-        canvas.addEventListener('touchstart',  e => { e.preventDefault(); const t = e.touches[0]; lastMove = performance.now(); this._sendInput({ MouseMove: this._coordsTouch(t) }); }, { passive: false });
-        canvas.addEventListener('touchmove',   e => { e.preventDefault(); const t = e.touches[0], now = performance.now(); if (now - lastMove < 30) return; lastMove = now; this._sendInput({ MouseMove: this._coordsTouch(t) }); }, { passive: false });
+        canvas.addEventListener('wheel',       e => { e.preventDefault(); if (this.streaming) this._sendInput({ MouseScroll: { delta_y: Math.round(e.deltaY) } }); }, { passive: false });
+
+        // Touch: sigue usando modo absoluto (pantallas móviles)
+        let lastTouch = 0;
+        canvas.addEventListener('touchstart',  e => { e.preventDefault(); const t = e.touches[0]; lastTouch = performance.now(); this._sendInput({ MouseMove: this._coordsTouch(t) }); }, { passive: false });
+        canvas.addEventListener('touchmove',   e => { e.preventDefault(); const t = e.touches[0], now = performance.now(); if (now - lastTouch < 30) return; lastTouch = now; this._sendInput({ MouseMove: this._coordsTouch(t) }); }, { passive: false });
 
         window.addEventListener('keydown', e => { if (!this.streaming) return; if (['F11','F5'].includes(e.key)) return; e.preventDefault(); this._sendInput({ KeyDown: { key_code: e.keyCode } }); });
         window.addEventListener('keyup',   e => { if (!this.streaming) return; this._sendInput({ KeyUp: { key_code: e.keyCode } }); });

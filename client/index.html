@@ -109,6 +109,14 @@
             <canvas id="remote-canvas"></canvas>
             <!-- Cursor remoto overlay: posicionado por JS cuando llega cursor_pos -->
             <div id="remote-cursor" class="remote-cursor hidden"></div>
+            <!-- Pointer Lock hints -->
+            <div id="pointer-lock-hint" class="pointer-lock-hint hidden">
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><path d="M12 8v4"/><circle cx="12" cy="16" r="0.5" fill="currentColor"/></svg>
+                Click para controlar el mouse
+            </div>
+            <div id="pointer-lock-esc" class="pointer-lock-esc hidden">
+                <kbd>ESC</kbd> para liberar el mouse
+            </div>
             <div class="viewer-overlay" id="viewer-overlay">
                 <div class="overlay-spinner"></div>
                 <p id="overlay-text">Conectando...</p>
