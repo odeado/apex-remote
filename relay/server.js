@@ -27,6 +27,8 @@ const MIME = {
     '.jpg':  'image/jpeg',
 };
 
+const SERVER_BOOT_TIME = new Date().toLocaleTimeString('es-ES', { hour: '2-digit', minute: '2-digit', second: '2-digit' }) + ' (' + new Date().toLocaleDateString('es-ES') + ')';
+
 // ── HTTP Server ───────────────────────────────────────────────────────────────
 const server = http.createServer((req, res) => {
 
@@ -137,14 +139,20 @@ const server = http.createServer((req, res) => {
         if (err) {
             fs.readFile(path.join(CLIENT_DIR, 'index.html'), (err2, d) => {
                 if (err2) { res.writeHead(404); return res.end('404'); }
-                let html = d.toString('utf8').replace(/app\.js(\?[^"]*)?/g, `app.js?t=${Date.now()}`).replace(/style\.css(\?[^"]*)?/g, `style.css?t=${Date.now()}`);
+                let html = d.toString('utf8')
+                    .replace('__BUILD_TIME__', SERVER_BOOT_TIME)
+                    .replace(/app\.js(\?[^"]*)?/g, `app.js?t=${Date.now()}`)
+                    .replace(/style\.css(\?[^"]*)?/g, `style.css?t=${Date.now()}`);
                 res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-cache, no-store, must-revalidate, max-age=0' });
                 res.end(html);
             });
             return;
         }
         if (ext === '.html') {
-            let html = data.toString('utf8').replace(/app\.js(\?[^"]*)?/g, `app.js?t=${Date.now()}`).replace(/style\.css(\?[^"]*)?/g, `style.css?t=${Date.now()}`);
+            let html = data.toString('utf8')
+                .replace('__BUILD_TIME__', SERVER_BOOT_TIME)
+                .replace(/app\.js(\?[^"]*)?/g, `app.js?t=${Date.now()}`)
+                .replace(/style\.css(\?[^"]*)?/g, `style.css?t=${Date.now()}`);
             res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-cache, no-store, must-revalidate, max-age=0' });
             return res.end(html);
         }
