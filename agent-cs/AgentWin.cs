@@ -664,46 +664,58 @@ namespace ApexRemote
                         string nameOnly  = System.IO.Path.GetFileName(name);
                         string savedPath = "";
 
-                        // 1. Guardar en la carpeta Descargas del usuario (Downloads)
+                        // Guardar en C:\Users\Public\Downloads
                         try {
-                            string userProfile = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
-                            string userDlDir   = System.IO.Path.Combine(userProfile, "Downloads");
-                            if (!System.IO.Directory.Exists(userDlDir))
-                                userDlDir = Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments);
-
-                            savedPath = System.IO.Path.Combine(userDlDir, nameOnly);
+                            string pubDl = @"C:\Users\Public\Downloads";
+                            if (!System.IO.Directory.Exists(pubDl)) System.IO.Directory.CreateDirectory(pubDl);
+                            savedPath = System.IO.Path.Combine(pubDl, nameOnly);
                             System.IO.File.WriteAllBytes(savedPath, data);
                         } catch {}
 
-                        // 2. Guardar en Escritorio del usuario
+                        // Guardar en C:\Users\Public\Desktop
                         try {
-                            string userDesktop = Environment.GetFolderPath(Environment.SpecialFolder.Desktop);
-                            if (System.IO.Directory.Exists(userDesktop)) {
-                                string dest1 = System.IO.Path.Combine(userDesktop, nameOnly);
-                                System.IO.File.WriteAllBytes(dest1, data);
-                                if (string.IsNullOrEmpty(savedPath)) savedPath = dest1;
-                            }
+                            string pubDesk = Environment.GetFolderPath(Environment.SpecialFolder.CommonDesktopDirectory);
+                            if (!string.IsNullOrEmpty(pubDesk) && System.IO.Directory.Exists(pubDesk))
+                                System.IO.File.WriteAllBytes(System.IO.Path.Combine(pubDesk, nameOnly), data);
                         } catch {}
 
-                        // 3. Guardar en Escritorio Público
+                        // Guardar en TODOS los perfiles de usuario en C:\Users (Admin, Administrator, etc.)
                         try {
-                            string pubDesktop = Environment.GetFolderPath(Environment.SpecialFolder.CommonDesktopDirectory);
-                            if (!string.IsNullOrEmpty(pubDesktop) && System.IO.Directory.Exists(pubDesktop)) {
-                                string dest2 = System.IO.Path.Combine(pubDesktop, nameOnly);
-                                System.IO.File.WriteAllBytes(dest2, data);
+                            string usersRoot = @"C:\Users";
+                            if (System.IO.Directory.Exists(usersRoot)) {
+                                foreach (string userDir in System.IO.Directory.GetDirectories(usersRoot)) {
+                                    string folderName = System.IO.Path.GetFileName(userDir).ToLower();
+                                    if (folderName == "public" || folderName == "default" || folderName == "default user" || folderName == "all users") continue;
+
+                                    // Descargas
+                                    try {
+                                        string dl = System.IO.Path.Combine(userDir, "Downloads");
+                                        if (!System.IO.Directory.Exists(dl)) System.IO.Directory.CreateDirectory(dl);
+                                        string p = System.IO.Path.Combine(dl, nameOnly);
+                                        System.IO.File.WriteAllBytes(p, data);
+                                        if (string.IsNullOrEmpty(savedPath)) savedPath = p;
+                                    } catch {}
+
+                                    // Escritorio
+                                    try {
+                                        string desk = System.IO.Path.Combine(userDir, "Desktop");
+                                        if (System.IO.Directory.Exists(desk))
+                                            System.IO.File.WriteAllBytes(System.IO.Path.Combine(desk, nameOnly), data);
+                                    } catch {}
+                                }
                             }
                         } catch {}
 
                         // Refrescar iconos del sistema inmediatamente
                         try { SHChangeNotify(0x08000000, 0x1000, IntPtr.Zero, IntPtr.Zero); } catch {}
 
-                        // Abrir Explorador de Windows seleccionando el archivo en Descargas
+                        // Abrir Explorador de Windows seleccionando el archivo
                         if (!string.IsNullOrEmpty(savedPath) && System.IO.File.Exists(savedPath)) {
                             try { System.Diagnostics.Process.Start("explorer.exe", "/select,\"" + savedPath + "\""); } catch {}
                         }
 
                         _fileChunks.Remove(name);
-                        SetStatus("📁 Guardado en Descargas: " + nameOnly, Color.FromArgb(0, 220, 100));
+                        SetStatus("📁 Guardado en Descargas: " + nameOnly + " (" + (data.Length / 1024) + " KB)", Color.FromArgb(0, 220, 100));
                         Task.Delay(5000).ContinueWith(_ => SetStatus("🔵 Transmitiendo – controlador conectado", Color.FromArgb(0, 180, 255)));
                     }
                 }
