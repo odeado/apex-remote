@@ -193,24 +193,72 @@ namespace ApexRemote
     // ─────────────────────────────────────────────────────────────────────────
     public class AgentForm : Form
     {
-        [DllImport("user32.dll")] static extern void mouse_event(int f, int x, int y, int d, int e);
-        [DllImport("user32.dll")] static extern void keybd_event(byte vk, byte sc, uint fl, int ei);
+        // SendInput es más confiable que mouse_event y funciona con UAC
+        [DllImport("user32.dll", SetLastError = true)]
+        static extern uint SendInput(uint nInputs, INPUT[] pInputs, int cbSize);
         [DllImport("user32.dll")] static extern bool DrawIconEx(IntPtr hdc, int x, int y, IntPtr hIcon, int cx, int cy, uint step, IntPtr br, uint di);
         [DllImport("user32.dll")] static extern bool GetCursorInfo(out CURSORINFO pci);
+
+        const int  INPUT_MOUSE    = 0;
+        const int  INPUT_KEYBOARD = 1;
+        const uint MOUSEEVENTF_LEFTDOWN   = 0x0002;
+        const uint MOUSEEVENTF_LEFTUP     = 0x0004;
+        const uint MOUSEEVENTF_RIGHTDOWN  = 0x0008;
+        const uint MOUSEEVENTF_RIGHTUP    = 0x0010;
+        const uint MOUSEEVENTF_MIDDLEDOWN = 0x0020;
+        const uint MOUSEEVENTF_MIDDLEUP   = 0x0040;
+        const uint MOUSEEVENTF_WHEEL      = 0x0800;
+        const uint KEYEVENTF_KEYUP        = 0x0002;
+        const uint CURSOR_SHOWING         = 0x00000001;
+        const uint DI_NORMAL              = 0x0003;
 
         [StructLayout(LayoutKind.Sequential)] struct PT         { public int x, y; }
         [StructLayout(LayoutKind.Sequential)] struct CURSORINFO { public int cbSize, flags; public IntPtr hCursor; public PT ptScreenPos; }
 
-        const int  MOUSEEVENTF_LEFTDOWN   = 0x0002;
-        const int  MOUSEEVENTF_LEFTUP     = 0x0004;
-        const int  MOUSEEVENTF_RIGHTDOWN  = 0x0008;
-        const int  MOUSEEVENTF_RIGHTUP    = 0x0010;
-        const int  MOUSEEVENTF_MIDDLEDOWN = 0x0020;
-        const int  MOUSEEVENTF_MIDDLEUP   = 0x0040;
-        const int  MOUSEEVENTF_WHEEL      = 0x0800;
-        const uint CURSOR_SHOWING         = 0x00000001;
-        const uint DI_NORMAL              = 0x0003;
-        const uint KEYEVENTF_KEYUP        = 2;
+        [StructLayout(LayoutKind.Sequential)]
+        struct MOUSEINPUT  { public int dx, dy; public uint mouseData, dwFlags, time; public IntPtr dwExtraInfo; }
+        [StructLayout(LayoutKind.Sequential)]
+        struct KEYBDINPUT  { public ushort wVk, wScan; public uint dwFlags, time; public IntPtr dwExtraInfo; }
+        [StructLayout(LayoutKind.Sequential)]
+        struct HARDWAREINPUT { public uint uMsg; public ushort wParamL, wParamH; }
+        [StructLayout(LayoutKind.Explicit)]
+        struct INPUT_UNION { [FieldOffset(0)] public MOUSEINPUT mi; [FieldOffset(0)] public KEYBDINPUT ki; [FieldOffset(0)] public HARDWAREINPUT hi; }
+        [StructLayout(LayoutKind.Sequential)]
+        struct INPUT { public int type; public INPUT_UNION u; }
+
+        void Click(uint downFlag, uint upFlag)
+        {
+            var inputs = new INPUT[2];
+            inputs[0].type = INPUT_MOUSE; inputs[0].u.mi.dwFlags = downFlag;
+            inputs[1].type = INPUT_MOUSE; inputs[1].u.mi.dwFlags = upFlag;
+            SendInput(2, inputs, System.Runtime.InteropServices.Marshal.SizeOf(typeof(INPUT)));
+        }
+
+        void SendMouseButton(uint flag)
+        {
+            var inputs = new INPUT[1];
+            inputs[0].type = INPUT_MOUSE; inputs[0].u.mi.dwFlags = flag;
+            SendInput(1, inputs, System.Runtime.InteropServices.Marshal.SizeOf(typeof(INPUT)));
+        }
+
+        void SendKey(ushort vk, bool keyUp)
+        {
+            var inputs = new INPUT[1];
+            inputs[0].type = INPUT_KEYBOARD;
+            inputs[0].u.ki.wVk   = vk;
+            inputs[0].u.ki.dwFlags = keyUp ? KEYEVENTF_KEYUP : 0;
+            SendInput(1, inputs, System.Runtime.InteropServices.Marshal.SizeOf(typeof(INPUT)));
+        }
+
+        void SendWheel(int delta)
+        {
+            var inputs = new INPUT[1];
+            inputs[0].type = INPUT_MOUSE;
+            inputs[0].u.mi.dwFlags    = MOUSEEVENTF_WHEEL;
+            inputs[0].u.mi.mouseData  = (uint)delta;
+            SendInput(1, inputs, System.Runtime.InteropServices.Marshal.SizeOf(typeof(INPUT)));
+        }
+
 
         readonly string _host;
         readonly string _id;
@@ -519,23 +567,23 @@ namespace ApexRemote
                         Cursor.Position = new Point(x, y);
                 }
                 else if (ev.Contains("MouseDown")) {
-                    if (ev.Contains("Left"))   mouse_event(MOUSEEVENTF_LEFTDOWN,   0, 0, 0, 0);
-                    if (ev.Contains("Right"))  mouse_event(MOUSEEVENTF_RIGHTDOWN,  0, 0, 0, 0);
-                    if (ev.Contains("Middle")) mouse_event(MOUSEEVENTF_MIDDLEDOWN, 0, 0, 0, 0);
+                    if (ev.Contains("Left"))   SendMouseButton(MOUSEEVENTF_LEFTDOWN);
+                    if (ev.Contains("Right"))  SendMouseButton(MOUSEEVENTF_RIGHTDOWN);
+                    if (ev.Contains("Middle")) SendMouseButton(MOUSEEVENTF_MIDDLEDOWN);
                 }
                 else if (ev.Contains("MouseUp")) {
-                    if (ev.Contains("Left"))   mouse_event(MOUSEEVENTF_LEFTUP,   0, 0, 0, 0);
-                    if (ev.Contains("Right"))  mouse_event(MOUSEEVENTF_RIGHTUP,  0, 0, 0, 0);
-                    if (ev.Contains("Middle")) mouse_event(MOUSEEVENTF_MIDDLEUP, 0, 0, 0, 0);
+                    if (ev.Contains("Left"))   SendMouseButton(MOUSEEVENTF_LEFTUP);
+                    if (ev.Contains("Right"))  SendMouseButton(MOUSEEVENTF_RIGHTUP);
+                    if (ev.Contains("Middle")) SendMouseButton(MOUSEEVENTF_MIDDLEUP);
                 }
                 else if (ev.Contains("MouseScroll")) {
-                    mouse_event(MOUSEEVENTF_WHEEL, 0, 0, -(int)GetNum(ev, "delta_y") * 3, 0);
+                    SendWheel(-(int)GetNum(ev, "delta_y") * 120);
                 }
                 else if (ev.Contains("KeyDown")) {
-                    keybd_event((byte)GetNum(ev, "key_code"), 0, 0, 0);
+                    SendKey((ushort)GetNum(ev, "key_code"), false);
                 }
                 else if (ev.Contains("KeyUp")) {
-                    keybd_event((byte)GetNum(ev, "key_code"), 0, KEYEVENTF_KEYUP, 0);
+                    SendKey((ushort)GetNum(ev, "key_code"), true);
                 }
             } catch {}
         }
@@ -635,3 +683,4 @@ namespace ApexRemote
         }
     }
 }
+
