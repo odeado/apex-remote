@@ -128,7 +128,8 @@ const server = http.createServer((req, res) => {
     }
 
     // Servir UI estática
-    let filePath = path.join(CLIENT_DIR, req.url === '/' ? 'index.html' : req.url);
+    const urlClean = req.url.split('?')[0];
+    let filePath = path.join(CLIENT_DIR, urlClean === '/' ? 'index.html' : urlClean);
     const ext    = path.extname(filePath);
     const mime   = MIME[ext] || 'text/plain';
 
