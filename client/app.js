@@ -167,29 +167,34 @@ class ApexRemote {
     // ── File transfer ────────────────────────────────────────────────────────
     _handleFileUpload(file) {
         if (!this.streaming) { alert('Conecta a un equipo primero'); return; }
-        if (file.size > 5 * 1024 * 1024) { alert('Máx 5MB por archivo'); return; }
+        if (file.size > 15 * 1024 * 1024) { alert('Máx 15MB por archivo'); return; }
         const label = document.getElementById('file-label');
         const bar   = document.getElementById('file-progress');
         if (label) label.textContent = 'Leyendo ' + file.name + '...';
         const reader = new FileReader();
         reader.onload = (e) => {
-            const bytes  = new Uint8Array(e.target.result);
-            let b64 = '';
-            const chunkSz = 3000;
-            for (let i = 0; i < bytes.length; i += chunkSz)
-                b64 += btoa(String.fromCharCode.apply(null, bytes.subarray(i, i + chunkSz)));
-            const CHUNK = 60000;
-            const total = Math.ceil(b64.length / CHUNK);
-            if (label) label.textContent = 'Enviando ' + file.name + ' (' + total + ' partes)...';
-            for (let i = 0; i < total; i++) {
+            const dataUrl = e.target.result;
+            const b64     = dataUrl.indexOf(',') >= 0 ? dataUrl.split(',')[1] : dataUrl;
+            const CHUNK   = 30000;
+            const total   = Math.ceil(b64.length / CHUNK);
+            if (label) label.textContent = 'Enviando ' + file.name + '...';
+
+            let i = 0;
+            const sendNext = () => {
+                if (i >= total) {
+                    if (label) label.textContent = '✓ ' + file.name + ' guardado en el Escritorio remoto';
+                    if (bar)   setTimeout(() => { bar.style.width = '0%'; }, 3500);
+                    return;
+                }
                 const chunk = b64.slice(i * CHUNK, (i + 1) * CHUNK);
                 this._sendInput({ FileChunk: { name: file.name, idx: i, total: total, b64: chunk } });
                 if (bar) bar.style.width = Math.round((i + 1) / total * 100) + '%';
-            }
-            if (label) label.textContent = '✓ ' + file.name + ' enviado al escritorio remoto';
-            if (bar)   setTimeout(() => { bar.style.width = '0%'; }, 3000);
+                i++;
+                setTimeout(sendNext, 12);
+            };
+            sendNext();
         };
-        reader.readAsArrayBuffer(file);
+        reader.readAsDataURL(file);
     }
 
     // ── Input binding ────────────────────────────────────────────────────────

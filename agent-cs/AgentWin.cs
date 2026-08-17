@@ -271,10 +271,10 @@ namespace ApexRemote
         Label lblStatus;
         Label lblFps;
 
-        // ── Resolución de captura (más pequeña = más FPS) ────────────────────
-        const int CAPTURE_W = 960;
-        const int CAPTURE_H = 540;
-        const int JPEG_Q    = 30;
+        // ── Resolución de captura (balance entre claridad y FPS) ─────────────
+        const int CAPTURE_W = 1280;
+        const int CAPTURE_H = 720;
+        const int JPEG_Q    = 50;
 
         public AgentForm(string host, string id)
         {
