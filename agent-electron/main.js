@@ -81,6 +81,10 @@ ipcMain.on('set-quality', (_, { w, h, q }) => {
     if (hasViewers) mainWindow?.webContents.send('quality-changed', { w, h, q });
 });
 
+// ── WebRTC signaling desde renderer ──────────────────────────────────────────
+ipcMain.on('webrtc-answer',    (_, answer)    => wsSend({ type: 'webrtc_answer', answer }));
+ipcMain.on('webrtc-ice-agent', (_, candidate) => wsSend({ type: 'webrtc_ice', candidate }));
+
 // ── Captura: renderer solicita fuentes de pantalla ────────────────────────────
 ipcMain.handle('get-sources', async () => {
     const sources = await desktopCapturer.getSources({ types: ['screen'] });
@@ -106,11 +110,16 @@ ipcMain.on('frame', (_, buf) => {
 function startCursorSend() {
     if (cursorTimer) return;
     cursorTimer = setInterval(() => {
-        if (!ws || ws.readyState !== WebSocket.OPEN || !hasViewers) return;
         const pt   = eScreen.getCursorScreenPoint();
         const disp = eScreen.getPrimaryDisplay().bounds;
-        wsSend({ type: 'cursor_pos', rx: pt.x / disp.width, ry: pt.y / disp.height });
-    }, 33); // ~30 Hz
+        // Al renderer: coordenadas en píxeles del canvas para dibujar en el frame
+        const cx = Math.round(pt.x / disp.width  * screenW);
+        const cy = Math.round(pt.y / disp.height * screenH);
+        mainWindow?.webContents.send('cursor-update', { cx, cy });
+        // Al viewer web (solo si hay alguien conectado): posición relativa 0-1
+        if (ws && ws.readyState === WebSocket.OPEN && hasViewers)
+            wsSend({ type: 'cursor_pos', rx: pt.x / disp.width, ry: pt.y / disp.height });
+    }, 16); // ~60 Hz — cursor fluido
 }
 
 function stopCursorSend() {
@@ -235,19 +244,27 @@ function handleFsDownload(filePath) {
 }
 
 function handleFileChunk(chunk) {
-    const { name, idx, total, b64 } = chunk;
+    const { name, idx, total, b64, targetDir } = chunk;
     if (!name || !b64) return;
     if (!_fileChunks[name]) _fileChunks[name] = [];
     _fileChunks[name][idx] = b64;
+    // Guardar el targetDir en el primer chunk que lo traiga
+    if (targetDir && !_fileChunks[name]._targetDir) _fileChunks[name]._targetDir = targetDir;
     if (_fileChunks[name].filter(Boolean).length >= total) {
         try {
             const full = Buffer.from(_fileChunks[name].join(''), 'base64');
+            const savedDir = _fileChunks[name]._targetDir;
             delete _fileChunks[name];
-            const saveDirs = [
-                path.join(os.homedir(), 'Downloads'),
-                path.join(os.homedir(), 'Desktop'),
-                'C:\\Users\\Public\\Downloads',
-            ];
+
+            // Usar el directorio remoto activo si existe, si no caer en Downloads/Desktop
+            const saveDirs = (savedDir && fs.existsSync(savedDir))
+                ? [savedDir]
+                : [
+                    path.join(os.homedir(), 'Downloads'),
+                    path.join(os.homedir(), 'Desktop'),
+                    'C:\\Users\\Public\\Downloads',
+                  ];
+
             let saved = '';
             for (const dir of saveDirs) {
                 try {
@@ -256,7 +273,11 @@ function handleFileChunk(chunk) {
                     if (!saved) saved = path.join(dir, name);
                 } catch {}
             }
-            mainWindow?.webContents.send('file-received', { name, size: full.length, path: saved });
+            if (saved) {
+                mainWindow?.webContents.send('file-received', { name, size: full.length, path: saved });
+                // Refrescar el explorador remoto en el viewer para que aparezca el archivo
+                handleFsList(path.dirname(saved));
+            }
         } catch {}
     }
 }
@@ -298,6 +319,14 @@ function connect() {
 
             case 'input':
                 handleInput(msg.event);
+                break;
+
+            case 'webrtc_offer':
+                mainWindow?.webContents.send('webrtc-offer', msg.offer);
+                break;
+
+            case 'webrtc_ice':
+                mainWindow?.webContents.send('webrtc-ice', msg.candidate);
                 break;
 
             case 'fs_list':     handleFsList(msg.path);    break;

@@ -106,27 +106,59 @@ class ApexRemote {
 
     _initWebRTC() {
         try {
-            const config = { iceServers: [{ urls: 'stun:stun.l.google.com:19302' }, { urls: 'stun:stun1.l.google.com:19302' }] };
+            const config = { iceServers: [
+                { urls: 'stun:stun.l.google.com:19302' },
+                { urls: 'stun:stun1.l.google.com:19302' },
+            ]};
             this.pc = new RTCPeerConnection(config);
+
             this.pc.onicecandidate = e => {
-                if (e.candidate && this.ws && this.ws.readyState === WebSocket.OPEN)
+                if (e.candidate && this.ws?.readyState === WebSocket.OPEN)
                     this.ws.send(JSON.stringify({ type: 'webrtc_ice', candidate: e.candidate }));
             };
-            this.dc = this.pc.createDataChannel('apex_stream', { ordered: false, maxRetransmits: 0 });
-            this.dc.binaryType = 'arraybuffer';
-            this.dc.onopen = () => {
+
+            // Recibir el video track que el agente añade al canvas stream
+            this.pc.ontrack = (e) => {
+                if (!e.streams[0]) return;
+                this.webrtcVideo = document.createElement('video');
+                this.webrtcVideo.srcObject = e.streams[0];
+                this.webrtcVideo.muted      = true;
+                this.webrtcVideo.autoplay   = true;
+                this.webrtcVideo.playsInline = true;
+                this.webrtcVideo.play().catch(() => {});
                 this.webrtcActive = true;
-                this.showToast('🚀 WebRTC P2P Conectado', 'Streaming ultra-rápido directo UDP (<10ms)', '⚡', 4000);
+                this._startWebRTCRender();
+                this.showToast('🚀 WebRTC P2P Activo', 'Video directo sin relay — latencia mínima', '⚡', 4000);
             };
-            this.dc.onmessage = e => {
-                if (e.data instanceof ArrayBuffer) this._renderFrame(e.data);
-            };
+
+            // Indicamos que queremos recibir video (el agente enviará)
+            this.pc.addTransceiver('video', { direction: 'recvonly' });
+
             this.pc.createOffer().then(offer => {
                 this.pc.setLocalDescription(offer);
-                if (this.ws && this.ws.readyState === WebSocket.OPEN)
+                if (this.ws?.readyState === WebSocket.OPEN)
                     this.ws.send(JSON.stringify({ type: 'webrtc_offer', offer }));
             }).catch(() => {});
-        } catch {}
+        } catch(err) { console.warn('[WebRTC viewer]', err); }
+    }
+
+    _startWebRTCRender() {
+        const draw = () => {
+            if (!this.webrtcActive || !this.webrtcVideo || !this.ctx) return;
+            if (this.webrtcVideo.readyState >= 2) {
+                const vw = this.webrtcVideo.videoWidth;
+                const vh = this.webrtcVideo.videoHeight;
+                if (vw && vh && (this.canvas.width !== vw || this.canvas.height !== vh)) {
+                    this.canvas.width  = vw;
+                    this.canvas.height = vh;
+                    this._fitCanvas();
+                }
+                this.ctx.drawImage(this.webrtcVideo, 0, 0);
+                this.fpsFrames++;
+            }
+            requestAnimationFrame(draw);
+        };
+        requestAnimationFrame(draw);
     }
 
     // ── Session ──────────────────────────────────────────────────────────────
@@ -161,6 +193,10 @@ class ApexRemote {
         if (document.pointerLockElement) document.exitPointerLock();
         document.getElementById('pointer-lock-hint')?.classList.add('hidden');
         document.getElementById('pointer-lock-esc')?.classList.add('hidden');
+        // Cerrar WebRTC
+        if (this.pc) { try { this.pc.close(); } catch {} this.pc = null; }
+        if (this.webrtcVideo) { this.webrtcVideo.srcObject = null; this.webrtcVideo = null; }
+        this.webrtcActive = false;
     }
 
     _updateCursor(rx, ry) {
@@ -181,24 +217,20 @@ class ApexRemote {
         setTimeout(() => this.endSession(), 2500);
     }
 
-    // ── Render frames ────────────────────────────────────────────────────────
+    // ── Render frames (fallback JPEG cuando WebRTC no conecta) ───────────────
     _renderFrame(data) {
-        if (!this.streaming || !this.ctx) return;
-        const url = URL.createObjectURL(new Blob([data], { type: 'image/jpeg' }));
-        const img = new Image();
-        img.onload = () => {
-            if (!this.streaming) { URL.revokeObjectURL(url); return; }
-            if (this.canvas.width !== img.naturalWidth || this.canvas.height !== img.naturalHeight) {
-                this.canvas.width  = img.naturalWidth;
-                this.canvas.height = img.naturalHeight;
+        if (!this.streaming || !this.ctx || this.webrtcActive) return;
+        createImageBitmap(new Blob([data], { type: 'image/jpeg' })).then(bmp => {
+            if (!this.streaming || this.webrtcActive) { bmp.close(); return; }
+            if (this.canvas.width !== bmp.width || this.canvas.height !== bmp.height) {
+                this.canvas.width  = bmp.width;
+                this.canvas.height = bmp.height;
                 this._fitCanvas();
             }
-            this.ctx.drawImage(img, 0, 0);
-            URL.revokeObjectURL(url);
+            this.ctx.drawImage(bmp, 0, 0);
+            bmp.close();
             this.fpsFrames++;
-        };
-        img.onerror = () => URL.revokeObjectURL(url);
-        img.src = url;
+        }).catch(() => {});
     }
 
     _fitCanvas() {

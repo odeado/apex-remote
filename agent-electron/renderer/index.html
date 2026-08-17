@@ -175,6 +175,43 @@
       setTimeout(() => toast.classList.add('hidden'), 5000);
     });
 
+    // ── Cursor: posición actual en píxeles del canvas ─────────────────────────
+    let cursorX = 0, cursorY = 0;
+
+    window.electronAPI.onCursorUpdate(({ cx, cy }) => {
+      cursorX = cx; cursorY = cy;
+    });
+
+    // Dibuja flecha estilo cursor Windows sobre el canvas ya capturado
+    function drawCursorArrow(ctx, x, y) {
+      ctx.save();
+      ctx.translate(x, y);
+      // Sombra para contraste en cualquier fondo
+      ctx.shadowColor = 'rgba(0,0,0,0.6)';
+      ctx.shadowBlur  = 3;
+      ctx.shadowOffsetX = 1;
+      ctx.shadowOffsetY = 1;
+      // Forma de flecha (arrow cursor clásico)
+      ctx.beginPath();
+      ctx.moveTo(0,  0);
+      ctx.lineTo(0,  19);
+      ctx.lineTo(4,  14);
+      ctx.lineTo(8,  22);
+      ctx.lineTo(11, 20);
+      ctx.lineTo(7,  12);
+      ctx.lineTo(13, 12);
+      ctx.closePath();
+      ctx.fillStyle   = '#ffffff';
+      ctx.fill();
+      ctx.shadowBlur  = 0;
+      ctx.shadowOffsetX = 0;
+      ctx.shadowOffsetY = 0;
+      ctx.strokeStyle = '#222222';
+      ctx.lineWidth   = 1.2;
+      ctx.stroke();
+      ctx.restore();
+    }
+
     // ── Captura de pantalla vía MediaStream (alta velocidad) ──────────────────
     let captureActive = false;
     let captureStream = null;
@@ -231,23 +268,33 @@
       }
     }
 
-    async function captureLoop() {
+    // Flag para no apilar encodes: si el anterior no terminó, skip
+    let encoding = false;
+
+    function captureLoop() {
       if (!captureActive) return;
 
-      // Dibujar frame actual del video
+      // Dibujar frame actual del video (siempre al ritmo del display para WebRTC)
       captureCtx.drawImage(captureVideo, 0, 0, captureCanvas.width, captureCanvas.height);
+      // Pintar cursor encima (getUserMedia no captura el cursor hardware)
+      drawCursorArrow(captureCtx, cursorX, cursorY);
 
-      // Codificar como JPEG y enviar al main process
-      const blob = await new Promise(resolve =>
-        captureCanvas.toBlob(resolve, 'image/jpeg', capQ.q)
-      );
-
-      if (blob && captureActive) {
-        const buf = await blob.arrayBuffer();
-        window.electronAPI.sendFrame(new Uint8Array(buf));
+      // JPEG solo para el fallback WebSocket — no bloquea el loop
+      if (!encoding) {
+        encoding = true;
+        captureCanvas.toBlob(blob => {
+          if (blob && captureActive) {
+            blob.arrayBuffer().then(buf => {
+              window.electronAPI.sendFrame(new Uint8Array(buf));
+              encoding = false;
+            });
+          } else {
+            encoding = false;
+          }
+        }, 'image/jpeg', capQ.q);
       }
 
-      // Siguiente frame lo antes posible (sincronizado con el display)
+      // Siguiente frame inmediatamente — no espera al encode
       if (captureActive) requestAnimationFrame(captureLoop);
     }
 
@@ -265,6 +312,52 @@
     window.electronAPI.onQualityChange((q) => {
       // Reiniciar captura con nueva calidad/resolución
       if (captureActive) startCapture(q);
+    });
+
+    // ── WebRTC: responder offer del viewer con video del canvas ───────────────
+    let agentPC = null;
+
+    window.electronAPI.onWebRTCOffer(async (offer) => {
+      try {
+        // Esperar a que el canvas esté listo (máx 5s)
+        let tries = 0;
+        while (!captureCanvas && tries < 50) {
+          await new Promise(r => setTimeout(r, 100));
+          tries++;
+        }
+        if (!captureCanvas) { console.warn('[WebRTC] canvas no disponible'); return; }
+
+        if (agentPC) { try { agentPC.close(); } catch {} agentPC = null; }
+
+        const config = { iceServers: [
+          { urls: 'stun:stun.l.google.com:19302' },
+          { urls: 'stun:stun1.l.google.com:19302' },
+        ]};
+        agentPC = new RTCPeerConnection(config);
+
+        // Añadir el stream del canvas como video track
+        const stream = captureCanvas.captureStream(60);
+        stream.getTracks().forEach(track => agentPC.addTrack(track, stream));
+
+        agentPC.onicecandidate = (e) => {
+          if (e.candidate) window.electronAPI.sendWebRTCICE(e.candidate);
+        };
+
+        await agentPC.setRemoteDescription(new RTCSessionDescription(offer));
+        const answer = await agentPC.createAnswer();
+        await agentPC.setLocalDescription(answer);
+        window.electronAPI.sendWebRTCAnswer(answer);
+
+        console.log('[WebRTC] Answer enviado — video stream activo');
+      } catch (err) {
+        console.error('[WebRTC Agent]', err);
+      }
+    });
+
+    window.electronAPI.onWebRTCICE((candidate) => {
+      if (agentPC && candidate) {
+        agentPC.addIceCandidate(new RTCIceCandidate(candidate)).catch(() => {});
+      }
     });
 
     // ── Controles de ventana ──────────────────────────────────────────────────
