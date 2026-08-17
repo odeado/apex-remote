@@ -167,7 +167,7 @@ class ApexRemote {
     // ── File transfer ────────────────────────────────────────────────────────
     _handleFileUpload(file) {
         if (!this.streaming) { alert('Conecta a un equipo primero'); return; }
-        if (file.size > 15 * 1024 * 1024) { alert('Máx 15MB por archivo'); return; }
+        if (file.size > 25 * 1024 * 1024) { alert('Máx 25MB por archivo'); return; }
         const label = document.getElementById('file-label');
         const bar   = document.getElementById('file-progress');
         if (label) label.textContent = 'Leyendo ' + file.name + '...';
@@ -175,7 +175,7 @@ class ApexRemote {
         reader.onload = (e) => {
             const dataUrl = e.target.result;
             const b64     = dataUrl.indexOf(',') >= 0 ? dataUrl.split(',')[1] : dataUrl;
-            const CHUNK   = 30000;
+            const CHUNK   = 8000; // 8KB chunks (pequeños y seguros, cero fragmentación)
             const total   = Math.ceil(b64.length / CHUNK);
             if (label) label.textContent = 'Enviando ' + file.name + '...';
 
@@ -190,7 +190,7 @@ class ApexRemote {
                 this._sendInput({ FileChunk: { name: file.name, idx: i, total: total, b64: chunk } });
                 if (bar) bar.style.width = Math.round((i + 1) / total * 100) + '%';
                 i++;
-                setTimeout(sendNext, 12);
+                setTimeout(sendNext, 8);
             };
             sendNext();
         };
@@ -213,6 +213,13 @@ class ApexRemote {
             if (!document.fullscreenElement) wrap?.requestFullscreen?.();
             else document.exitFullscreen?.();
             setTimeout(() => this._fitCanvas(), 200);
+        });
+        document.getElementById('quality-select')?.addEventListener('change', e => {
+            const val = e.target.value;
+            let mode = { w: 1280, h: 720, q: 45 };
+            if (val === 'fast')     mode = { w: 960,  h: 540,  q: 35 };
+            if (val === 'hd')       mode = { w: 1920, h: 1080, q: 60 };
+            this._sendInput({ SetQuality: mode });
         });
         document.getElementById('file-input')?.addEventListener('change', e => {
             if (e.target.files[0]) this._handleFileUpload(e.target.files[0]);

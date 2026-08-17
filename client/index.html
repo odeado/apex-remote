@@ -74,8 +74,14 @@
                 <span class="hud-id" id="viewer-id-display"></span>
             </div>
             <div class="hud-center">
-                <div class="hud-stat"><span class="hud-label">FPS</span><span id="hud-fps">—</span></div>
-                <div class="hud-stat"><span class="hud-label">CALIDAD</span><span id="hud-quality">JPEG</span></div>
+                <div class="hud-stat">
+                    <span class="hud-label">CALIDAD</span>
+                    <select id="quality-select" class="hud-select">
+                        <option value="fast">⚡ Rápido (540p)</option>
+                        <option value="balanced" selected>⚖️ Equilibrio (720p)</option>
+                        <option value="hd">🔍 HD (1080p)</option>
+                    </select>
+                </div>
             </div>
             <div class="hud-right">
                 <button id="btn-file" class="hud-btn" title="Enviar archivo al equipo remoto" onclick="document.getElementById('file-input').click()">📁 Archivo</button>

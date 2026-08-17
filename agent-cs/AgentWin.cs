@@ -170,9 +170,15 @@ namespace ApexRemote
             }
 
             byte[] data = new byte[len];
-            for (long i = 0; i < len; i++) {
-                data[i] = ReadByte();
-                if (masked) data[i] ^= maskBytes[i % 4];
+            int totalRead = 0;
+            while (totalRead < len) {
+                int r = _net.Read(data, totalRead, (int)len - totalRead);
+                if (r <= 0) throw new EndOfStreamException("WebSocket cerrado");
+                totalRead += r;
+            }
+
+            if (masked) {
+                for (int i = 0; i < len; i++) data[i] ^= maskBytes[i % 4];
             }
 
             return new WsFrame { Opcode = opcode, Data = data };
@@ -271,10 +277,10 @@ namespace ApexRemote
         Label lblStatus;
         Label lblFps;
 
-        // ── Resolución de captura (balance entre claridad y FPS) ─────────────
-        const int CAPTURE_W = 1280;
-        const int CAPTURE_H = 720;
-        const int JPEG_Q    = 50;
+        // ── Resolución y calidad de captura (dinámicas) ───────────────────────
+        volatile int _screenW = 1280;
+        volatile int _screenH = 720;
+        volatile int _jpegQ   = 45;
 
         public AgentForm(string host, string id)
         {
@@ -457,7 +463,7 @@ namespace ApexRemote
                     long diff = DateTime.UtcNow.Ticks - tsBase;
                     if (diff >= 10000000) {
                         double fps = frames * 10000000.0 / diff;
-                        SetFps(string.Format("{0:0.0} FPS  {1}x{2}  {3}KB  [WS]", fps, CAPTURE_W, CAPTURE_H, frame.Length / 1024));
+                        SetFps(string.Format("{0:0.0} FPS  {1}x{2}  {3}KB  [WS]", fps, _screenW, _screenH, frame.Length / 1024));
                         frames = 0; tsBase = DateTime.UtcNow.Ticks;
                     }
                 }
@@ -535,7 +541,7 @@ namespace ApexRemote
                         long diff = DateTime.UtcNow.Ticks - tsBase;
                         if (diff >= 10000000) {
                             double fps = frames * 10000000.0 / diff;
-                            SetFps(string.Format("{0:0.0} FPS  ·  {1}×{2}  [HTTP]", fps, CAPTURE_W, CAPTURE_H));
+                            SetFps(string.Format("{0:0.0} FPS  ·  {1}×{2}  [HTTP]", fps, _screenW, _screenH));
                             frames = 0; tsBase = DateTime.UtcNow.Ticks;
                         }
                     }
@@ -595,6 +601,16 @@ namespace ApexRemote
                 else if (ev.Contains("KeyUp")) {
                     SendKey((ushort)GetNum(ev, "key_code"), true);
                 }
+                else if (ev.Contains("SetQuality")) {
+                    int w = (int)GetNum(ev, "w");
+                    int h = (int)GetNum(ev, "h");
+                    int q = (int)GetNum(ev, "q");
+                    if (w > 0 && h > 0 && q > 0) {
+                        _screenW = w;
+                        _screenH = h;
+                        _jpegQ   = q;
+                    }
+                }
             } catch {}
         }
 
@@ -621,26 +637,34 @@ namespace ApexRemote
                 int    total = (int)GetNum(msg, "total");
                 string b64   = GetStr(msg, "b64");
 
-                if (!_fileChunks.ContainsKey(name))
+                if (string.IsNullOrEmpty(name) || string.IsNullOrEmpty(b64)) return;
+
+                if (idx == 0 || !_fileChunks.ContainsKey(name))
                     _fileChunks[name] = new System.Collections.Generic.List<string>();
 
                 var chunks = _fileChunks[name];
                 while (chunks.Count <= idx) chunks.Add(null);
                 chunks[idx] = b64;
 
-                // Check if all chunks arrived
-                bool complete = chunks.Count == total;
-                if (complete) { foreach (var c in chunks) if (c == null) { complete = false; break; } }
+                if (chunks.Count >= total) {
+                    bool complete = true;
+                    for (int k = 0; k < total; k++) {
+                        if (k >= chunks.Count || chunks[k] == null) { complete = false; break; }
+                    }
 
-                if (complete) {
-                    string fullB64 = string.Concat(chunks.ToArray());
-                    byte[] data    = Convert.FromBase64String(fullB64);
-                    string desktop = Environment.GetFolderPath(Environment.SpecialFolder.Desktop);
-                    string dest    = System.IO.Path.Combine(desktop, System.IO.Path.GetFileName(name));
-                    System.IO.File.WriteAllBytes(dest, data);
-                    _fileChunks.Remove(name);
-                    SetStatus("📁 Archivo recibido: " + name, Color.FromArgb(0, 220, 100));
-                    Task.Delay(3000).ContinueWith(_ => SetStatus("🔵 Transmitiendo – controlador conectado", Color.FromArgb(0, 180, 255)));
+                    if (complete) {
+                        var sb = new StringBuilder();
+                        for (int k = 0; k < total; k++) sb.Append(chunks[k]);
+                        byte[] data = Convert.FromBase64String(sb.ToString());
+
+                        string desktop = Environment.GetFolderPath(Environment.SpecialFolder.Desktop);
+                        string dest    = System.IO.Path.Combine(desktop, System.IO.Path.GetFileName(name));
+                        System.IO.File.WriteAllBytes(dest, data);
+
+                        _fileChunks.Remove(name);
+                        SetStatus("📁 Recibido: " + name + " (" + (data.Length / 1024) + " KB)", Color.FromArgb(0, 220, 100));
+                        Task.Delay(3500).ContinueWith(_ => SetStatus("🔵 Transmitiendo – controlador conectado", Color.FromArgb(0, 180, 255)));
+                    }
                 }
             } catch {}
         }
@@ -675,19 +699,19 @@ namespace ApexRemote
                         }
                     } catch {}
 
-                    using (var sc = new Bitmap(CAPTURE_W, CAPTURE_H, PixelFormat.Format32bppRgb))
+                    using (var sc = new Bitmap(_screenW, _screenH, PixelFormat.Format32bppRgb))
                     using (var gR = Graphics.FromImage(sc))
                     {
                         gR.InterpolationMode  = InterpolationMode.Low;
                         gR.CompositingQuality = CompositingQuality.HighSpeed;
                         gR.SmoothingMode      = SmoothingMode.None;
-                        gR.DrawImage(src, 0, 0, CAPTURE_W, CAPTURE_H);
+                        gR.DrawImage(src, 0, 0, _screenW, _screenH);
 
                         using (var ms = new MemoryStream())
                         {
                             var enc = GetJpegCodec();
                             var ep  = new EncoderParameters(1);
-                            ep.Param[0] = new EncoderParameter(System.Drawing.Imaging.Encoder.Quality, (long)JPEG_Q);
+                            ep.Param[0] = new EncoderParameter(System.Drawing.Imaging.Encoder.Quality, (long)_jpegQ);
                             sc.Save(ms, enc, ep);
                             return ms.ToArray();
                         }

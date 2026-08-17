@@ -249,6 +249,22 @@ html, body {
     touch-action: none;
 }
 
+.hud-select {
+    background: rgba(255,255,255,.08);
+    border: 1px solid var(--border);
+    color: var(--accent);
+    padding: 2px 8px;
+    border-radius: 6px;
+    font-size: 11px;
+    font-weight: 600;
+    cursor: pointer;
+    outline: none;
+}
+.hud-select option {
+    background: #111620;
+    color: #eef2f7;
+}
+
 /* Overlay */
 .viewer-overlay {
     position: absolute; inset: 0;
