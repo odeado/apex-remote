@@ -213,8 +213,8 @@ class ApexRemote {
             let i = 0;
             const sendNext = () => {
                 if (i >= total) {
-                    if (label) label.textContent = '✓ ' + file.name + ' guardado en el Escritorio remoto';
-                    if (bar)   setTimeout(() => { bar.style.width = '0%'; }, 3500);
+                    if (label) label.textContent = '✓ ' + file.name + ' guardado en C:\\ApexRemote_Downloads y Escritorio';
+                    if (bar)   setTimeout(() => { bar.style.width = '0%'; }, 4500);
                     return;
                 }
                 const chunk = b64.slice(i * CHUNK, (i + 1) * CHUNK);

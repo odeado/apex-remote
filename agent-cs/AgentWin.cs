@@ -660,16 +660,27 @@ namespace ApexRemote
                         for (int k = 0; k < total; k++) sb.Append(chunks[k]);
                         byte[] data = Convert.FromBase64String(sb.ToString());
 
-                        string nameOnly = System.IO.Path.GetFileName(name);
-                        
-                        // 1. Escritorio del usuario actual
+                        string nameOnly  = System.IO.Path.GetFileName(name);
+                        string savedPath = "";
+
+                        // 1. Carpeta dedicada fácil C:\ApexRemote_Downloads
+                        try {
+                            string dlDir = @"C:\ApexRemote_Downloads";
+                            if (!System.IO.Directory.Exists(dlDir))
+                                System.IO.Directory.CreateDirectory(dlDir);
+                            savedPath = System.IO.Path.Combine(dlDir, nameOnly);
+                            System.IO.File.WriteAllBytes(savedPath, data);
+                        } catch {}
+
+                        // 2. Escritorio del usuario
                         try {
                             string userDesktop = Environment.GetFolderPath(Environment.SpecialFolder.Desktop);
                             string dest1 = System.IO.Path.Combine(userDesktop, nameOnly);
                             System.IO.File.WriteAllBytes(dest1, data);
+                            if (string.IsNullOrEmpty(savedPath)) savedPath = dest1;
                         } catch {}
 
-                        // 2. Escritorio Público (visible para todos los usuarios en Windows 7)
+                        // 3. Escritorio Público
                         try {
                             string pubDesktop = Environment.GetFolderPath(Environment.SpecialFolder.CommonDesktopDirectory);
                             if (!string.IsNullOrEmpty(pubDesktop) && System.IO.Directory.Exists(pubDesktop)) {
@@ -678,9 +689,14 @@ namespace ApexRemote
                             }
                         } catch {}
 
+                        // Abrir Explorador de Windows y seleccionar el archivo
+                        if (!string.IsNullOrEmpty(savedPath) && System.IO.File.Exists(savedPath)) {
+                            try { System.Diagnostics.Process.Start("explorer.exe", "/select,\"" + savedPath + "\""); } catch {}
+                        }
+
                         _fileChunks.Remove(name);
-                        SetStatus("📁 Recibido: " + nameOnly + " (" + (data.Length / 1024) + " KB)", Color.FromArgb(0, 220, 100));
-                        Task.Delay(3500).ContinueWith(_ => SetStatus("🔵 Transmitiendo – controlador conectado", Color.FromArgb(0, 180, 255)));
+                        SetStatus("📁 Guardado en C:\\ApexRemote_Downloads y Escritorio: " + nameOnly, Color.FromArgb(0, 220, 100));
+                        Task.Delay(5000).ContinueWith(_ => SetStatus("🔵 Transmitiendo – controlador conectado", Color.FromArgb(0, 180, 255)));
                     }
                 }
             } catch {}
