@@ -162,7 +162,13 @@ const server = http.createServer((req, res) => {
 });
 
 // ── WebSocket Server ──────────────────────────────────────────────────────────
-const wss = new WebSocketServer({ server, path: '/ws' });
+const wss = new WebSocketServer({ noServer: true });
+
+server.on('upgrade', (req, socket, head) => {
+    wss.handleUpgrade(req, socket, head, (ws) => {
+        wss.emit('connection', ws, req);
+    });
+});
 
 wss.on('connection', (ws, req) => {
     ws._role = null;
