@@ -9,7 +9,7 @@
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
-    <link rel="stylesheet" href="style.css?v=7">
+    <link rel="stylesheet" href="style.css?v=8">
 </head>
 <body>
 <div id="app">
@@ -111,13 +111,19 @@
                 <button class="touch-btn" id="touch-lclick">👆</button>
                 <button class="touch-btn" id="touch-rclick">☰</button>
                 <button class="touch-btn" id="touch-scroll-down">↓</button>
+            <div class="dropzone-overlay hidden" id="dropzone-overlay">
+                <div class="dropzone-box">
+                    <div class="dropzone-icon">📁</div>
+                    <div class="dropzone-title">Suelta los archivos aquí para transferir</div>
+                    <div class="dropzone-sub">Se guardarán automáticamente en la carpeta Descargas y Escritorio de la PC remota</div>
+                </div>
             </div>
         </div>
     </div>
 
 </div>
 <div id="toast-container" class="toast-container"></div>
-<script src="app.js?v=7"></script>
+<script src="app.js?v=8"></script>
 <script>
 const obs = new MutationObserver(() => {
     const d2 = document.getElementById('status-dot2');

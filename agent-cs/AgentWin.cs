@@ -269,6 +269,7 @@ namespace ApexRemote
 
         readonly string _host;
         readonly string _id;
+        readonly string _pin;
         readonly CancellationTokenSource _cts = new CancellationTokenSource();
 
         volatile bool _hasViewers = false;
@@ -278,7 +279,8 @@ namespace ApexRemote
         Label lblStatus;
         Label lblFps;
 
-        // ── Resolución y calidad de captura (dinámicas) ───────────────────────
+        // ── Portapapeles y calidad ──────────────────────────────────────────
+        string _lastClipboardText = "";
         volatile int _screenW = 1280;
         volatile int _screenH = 720;
         volatile int _jpegQ   = 45;
@@ -287,8 +289,10 @@ namespace ApexRemote
         {
             _host = host;
             _id   = id;
+            _pin  = new Random().Next(1000, 9999).ToString();
             BuildUI();
             StartAgent();
+            StartClipboardLoop();
         }
 
         void BuildUI()
@@ -305,16 +309,19 @@ namespace ApexRemote
             var t = new Label { Text = "⚡ ApexRemote", Font = new Font("Segoe UI", 15, FontStyle.Bold),
                 ForeColor = Color.FromArgb(0, 229, 255), Location = new Point(14, 10), AutoSize = true };
 
-            var s = new Label { Text = "Comparte este ID con quien te controlará:",
+            var s = new Label { Text = "ID y PIN para conexión remota:",
                 Font = new Font("Segoe UI", 9), ForeColor = Color.FromArgb(90, 106, 128),
                 Location = new Point(16, 40), AutoSize = true };
 
-            var idLbl = new Label { Text = _id, Font = new Font("Consolas", 26, FontStyle.Bold),
-                ForeColor = Color.White, Location = new Point(14, 58), AutoSize = true };
+            var idLbl = new Label { Text = _id, Font = new Font("Consolas", 22, FontStyle.Bold),
+                ForeColor = Color.White, Location = new Point(14, 60), AutoSize = true };
+
+            var pinLbl = new Label { Text = "PIN: " + _pin, Font = new Font("Consolas", 14, FontStyle.Bold),
+                ForeColor = Color.FromArgb(0, 229, 255), Location = new Point(165, 66), AutoSize = true };
 
             var btn = new Button { Text = "Copiar ID", Font = new Font("Segoe UI", 9, FontStyle.Bold),
                 ForeColor = Color.Black, BackColor = Color.FromArgb(0, 229, 255), FlatStyle = FlatStyle.Flat,
-                Location = new Point(272, 63), Size = new Size(118, 36), Cursor = Cursors.Hand };
+                Location = new Point(282, 63), Size = new Size(108, 34), Cursor = Cursors.Hand };
             btn.FlatAppearance.BorderSize = 0;
             btn.Click += (o, e) => {
                 Clipboard.SetText(_id);
@@ -328,7 +335,7 @@ namespace ApexRemote
             lblFps = new Label { Text = "", Font = new Font("Consolas", 8),
                 ForeColor = Color.FromArgb(60, 80, 100), Location = new Point(16, 132), AutoSize = true };
 
-            panel.Controls.AddRange(new Control[] { t, s, idLbl, btn, lblStatus, lblFps });
+            panel.Controls.AddRange(new Control[] { t, s, idLbl, pinLbl, btn, lblStatus, lblFps });
             Controls.Add(panel);
         }
 
@@ -612,10 +619,69 @@ namespace ApexRemote
                         _jpegQ   = q;
                     }
                 }
-                else if (ev.Contains("FileChunk")) {
+                else if (ev.Contains("FileChunk") || ev.Contains("file_chunk")) {
                     HandleFileChunk(ev);
                 }
+                else if (ev.Contains("ClipboardSync") || ev.Contains("clipboard_sync")) {
+                    string txt = GetStr(ev, "text");
+                    if (!string.IsNullOrEmpty(txt)) {
+                        _lastClipboardText = txt;
+                        STA(() => Clipboard.SetText(txt));
+                        SetStatus("📋 Portapapeles sincronizado", Color.FromArgb(0, 220, 100));
+                        Task.Delay(3000).ContinueWith(_ => SetStatus("🔵 Transmitiendo – controlador conectado", Color.FromArgb(0, 180, 255)));
+                    }
+                }
             } catch {}
+        }
+
+        void StartClipboardLoop()
+        {
+            new Thread(() => {
+                while (!_cts.IsCancellationRequested) {
+                    try {
+                        if (_hasViewers) {
+                            string txt = STA(() => Clipboard.ContainsText() ? Clipboard.GetText() : null);
+                            if (!string.IsNullOrEmpty(txt) && txt != _lastClipboardText && txt.Length < 100000) {
+                                _lastClipboardText = txt;
+                                SendClipboardToController(txt);
+                            }
+                        }
+                    } catch {}
+                    Thread.Sleep(800);
+                }
+            }) { IsBackground = true }.Start();
+        }
+
+        void SendClipboardToController(string text)
+        {
+            try {
+                string json = "{\"type\":\"clipboard_sync\",\"text\":\"" + EscapeJson(text) + "\"}";
+                if (_ws != null && _wsMode) _ws.SendText(json);
+            } catch {}
+        }
+
+        static string EscapeJson(string s)
+        {
+            if (string.IsNullOrEmpty(s)) return "";
+            return s.Replace("\\", "\\\\").Replace("\"", "\\\"").Replace("\n", "\\n").Replace("\r", "\\r");
+        }
+
+        static T STA<T>(Func<T> func)
+        {
+            T val = default(T);
+            var t = new Thread(() => { try { val = func(); } catch {} });
+            t.SetApartmentState(ApartmentState.STA);
+            t.Start();
+            t.Join();
+            return val;
+        }
+
+        static void STA(Action act)
+        {
+            var t = new Thread(() => { try { act(); } catch {} });
+            t.SetApartmentState(ApartmentState.STA);
+            t.Start();
+            t.Join();
         }
 
         double GetNum(string json, string key)

@@ -55,6 +55,11 @@ class ApexRemote {
             this._startHud();
             this._showFileBar();
             this._initWebRTC();
+        } else if (msg.type === 'clipboard_sync' && msg.text) {
+            if (navigator.clipboard && navigator.clipboard.writeText) {
+                navigator.clipboard.writeText(msg.text).catch(() => {});
+            }
+            this.showToast('📋 Portapapeles Recibido', 'Texto copiado desde la PC remota', '📋', 3000);
         } else if (msg.type === 'webrtc_answer') {
             if (this.pc) this.pc.setRemoteDescription(new RTCSessionDescription(msg.answer)).catch(() => {});
         } else if (msg.type === 'webrtc_ice') {
@@ -257,15 +262,18 @@ class ApexRemote {
     // ── File transfer ────────────────────────────────────────────────────────
     _handleFileUpload(file) {
         if (!this.streaming) { alert('Conecta a un equipo primero'); return; }
-        if (file.size > 25 * 1024 * 1024) { alert('Máx 25MB por archivo'); return; }
+        if (file.size > 50 * 1024 * 1024) { alert('Máx 50MB por archivo'); return; }
         const label = document.getElementById('file-label');
         const bar   = document.getElementById('file-progress');
         if (label) label.textContent = 'Leyendo ' + file.name + '...';
         const reader = new FileReader();
+        const startTime = performance.now();
+        let bytesSent = 0;
+
         reader.onload = (e) => {
             const dataUrl = e.target.result;
             const b64     = dataUrl.indexOf(',') >= 0 ? dataUrl.split(',')[1] : dataUrl;
-            const CHUNK   = 8000; // 8KB chunks (pequeños y seguros, cero fragmentación)
+            const CHUNK   = 12000; // 12KB chunks para mayor velocidad
             const total   = Math.ceil(b64.length / CHUNK);
             if (label) label.textContent = 'Enviando ' + file.name + '...';
 
@@ -279,9 +287,15 @@ class ApexRemote {
                 }
                 const chunk = b64.slice(i * CHUNK, (i + 1) * CHUNK);
                 this._sendInput({ FileChunk: { name: file.name, idx: i, total: total, b64: chunk } });
-                if (bar) bar.style.width = Math.round((i + 1) / total * 100) + '%';
+                bytesSent += chunk.length;
+                const elapsedSec = (performance.now() - startTime) / 1000;
+                const speedMB    = elapsedSec > 0 ? ((bytesSent * 0.75) / (1024 * 1024) / elapsedSec).toFixed(1) : '0.0';
+                const pct        = Math.round((i + 1) / total * 100);
+
+                if (label) label.textContent = 'Enviando ' + file.name + ' (' + pct + '% · ' + speedMB + ' MB/s)';
+                if (bar)   bar.style.width = pct + '%';
                 i++;
-                setTimeout(sendNext, 8);
+                setTimeout(sendNext, 6);
             };
             sendNext();
         };
@@ -315,6 +329,41 @@ class ApexRemote {
         });
         document.getElementById('file-input')?.addEventListener('change', e => {
             if (e.target.files[0]) this._handleFileUpload(e.target.files[0]);
+        });
+
+        // ── Drag & Drop Overlay on Canvas ────────────────────────────────────
+        const wrap = document.getElementById('canvas-wrap');
+        if (wrap) {
+            wrap.addEventListener('dragover', e => {
+                e.preventDefault();
+                document.getElementById('dropzone-overlay')?.classList.remove('hidden');
+            });
+            wrap.addEventListener('dragleave', e => {
+                if (e.relatedTarget === null || !wrap.contains(e.relatedTarget)) {
+                    document.getElementById('dropzone-overlay')?.classList.add('hidden');
+                }
+            });
+            wrap.addEventListener('drop', e => {
+                e.preventDefault();
+                document.getElementById('dropzone-overlay')?.classList.add('hidden');
+                if (e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files.length > 0) {
+                    for (let i = 0; i < e.dataTransfer.files.length; i++) {
+                        this._handleFileUpload(e.dataTransfer.files[i]);
+                    }
+                }
+            });
+        }
+
+        // ── Clipboard Copy Sync ──────────────────────────────────────────────
+        window.addEventListener('copy', () => {
+            if (this.streaming && navigator.clipboard) {
+                navigator.clipboard.readText().then(txt => {
+                    if (txt) {
+                        this._sendInput({ ClipboardSync: { text: txt } });
+                        this.showToast('📋 Portapapeles Copiado', 'Texto enviado a la PC remota', '✨', 2500);
+                    }
+                }).catch(() => {});
+            }
         });
         const wrap = document.getElementById('canvas-wrap');
         if (wrap) {
