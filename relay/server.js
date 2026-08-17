@@ -227,6 +227,42 @@ wss.on('connection', (ws, req) => {
                 break;
             }
 
+            case 'webrtc_offer': {
+                if (ws._role !== 'viewer') return;
+                const session = sessions.get(ws._id);
+                if (session && session.agent && session.agent.readyState === WebSocket.OPEN) {
+                    session.agent.send(JSON.stringify({ type: 'webrtc_offer', offer: msg.offer }));
+                }
+                break;
+            }
+
+            case 'webrtc_answer': {
+                if (ws._role !== 'agent') return;
+                const session = sessions.get(ws._id);
+                if (session) {
+                    session.viewers.forEach(v => {
+                        if (v.readyState === WebSocket.OPEN)
+                            v.send(JSON.stringify({ type: 'webrtc_answer', answer: msg.answer }));
+                    });
+                }
+                break;
+            }
+
+            case 'webrtc_ice': {
+                const session = sessions.get(ws._id);
+                if (!session) return;
+                if (ws._role === 'viewer') {
+                    if (session.agent && session.agent.readyState === WebSocket.OPEN)
+                        session.agent.send(JSON.stringify({ type: 'webrtc_ice', candidate: msg.candidate }));
+                } else if (ws._role === 'agent') {
+                    session.viewers.forEach(v => {
+                        if (v.readyState === WebSocket.OPEN)
+                            v.send(JSON.stringify({ type: 'webrtc_ice', candidate: msg.candidate }));
+                    });
+                }
+                break;
+            }
+
             case 'input': {
                 if (ws._role !== 'viewer') return;
                 const session = sessions.get(ws._id);

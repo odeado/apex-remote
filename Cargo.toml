@@ -3,5 +3,6 @@ members = [
     "common",
     "server",
     "agent",
+    "tauri-app/src-tauri",
 ]
 resolver = "2"
