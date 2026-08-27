@@ -1,0 +1,10 @@
+{
+  "name": "apex-remote-relay",
+  "version": "1.0.0",
+  "scripts": {
+    "start": "node relay/server.js"
+  },
+  "dependencies": {
+    "ws": "^8.18.0"
+  }
+}
