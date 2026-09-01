@@ -13,8 +13,9 @@ class ApexRemote {
         this._fitted   = false;
         // Posición predicha del cursor remoto (0-1), se actualiza localmente
         // sin esperar la vuelta por red → cursor instantáneo
-        this._cursorRx = 0.5;
-        this._cursorRy = 0.5;
+        this._cursorRx  = 0.5;
+        this._cursorRy  = 0.5;
+        this._rendering = false; // evita encolar decodificaciones JPEG
 
         const wsProto = location.protocol === 'https:' ? 'wss:' : 'ws:';
         const host    = location.protocol === 'file:' ? 'localhost:8080' : location.host;
@@ -71,9 +72,9 @@ class ApexRemote {
         } else if (msg.type === 'webrtc_answer') {
             if (this.pc) this.pc.setRemoteDescription(new RTCSessionDescription(msg.answer)).catch(() => {});
         } else if (msg.type === 'webrtc_ice') {
-            if (this.pc && msg.candidate &&
-                (msg.candidate.sdpMid !== null || msg.candidate.sdpMLineIndex !== null)) {
-                this.pc.addIceCandidate(new RTCIceCandidate(msg.candidate)).catch(() => {});
+            // try-catch: RTCIceCandidate lanza síncronamente si sdpMid y sdpMLineIndex son null/undefined
+            if (this.pc && msg.candidate) {
+                try { this.pc.addIceCandidate(new RTCIceCandidate(msg.candidate)).catch(() => {}); } catch(e) {}
             }
         } else if (msg.type === 'error') {
             this._showError(msg.message);
@@ -228,7 +229,12 @@ class ApexRemote {
     // ── Render frames (fallback JPEG cuando WebRTC no conecta) ───────────────
     _renderFrame(data) {
         if (!this.streaming || !this.ctx || this.webrtcActive) return;
+        // Si todavía estamos decodificando el frame anterior, descartar éste.
+        // Evita que se encolen frames y causen tiritones en ráfaga.
+        if (this._rendering) return;
+        this._rendering = true;
         createImageBitmap(new Blob([data], { type: 'image/jpeg' })).then(bmp => {
+            this._rendering = false;
             if (!this.streaming || this.webrtcActive) { bmp.close(); return; }
             if (this.canvas.width !== bmp.width || this.canvas.height !== bmp.height) {
                 this.canvas.width  = bmp.width;
@@ -238,7 +244,7 @@ class ApexRemote {
             this.ctx.drawImage(bmp, 0, 0);
             bmp.close();
             this.fpsFrames++;
-        }).catch(() => {});
+        }).catch(() => { this._rendering = false; });
     }
 
     _fitCanvas() {
@@ -519,8 +525,17 @@ class ApexRemote {
 
         // Touch: sigue usando modo absoluto (pantallas móviles)
         let lastTouch = 0;
-        canvas.addEventListener('touchstart',  e => { e.preventDefault(); const t = e.touches[0]; lastTouch = performance.now(); this._sendInput({ MouseMove: this._coordsTouch(t) }); }, { passive: false });
-        canvas.addEventListener('touchmove',   e => { e.preventDefault(); const t = e.touches[0], now = performance.now(); if (now - lastTouch < 30) return; lastTouch = now; this._sendInput({ MouseMove: this._coordsTouch(t) }); }, { passive: false });
+        // Touch en modo absoluto: mover cursor remoto Y actualizar overlay local inmediatamente
+        // (no esperar el roundtrip agent→cursor_pos → el cursor se ve instantáneo)
+        const _touchMove = (t) => {
+            const c = this._coordsTouch(t);
+            this._sendInput({ MouseMove: c });
+            this._cursorRx = c.rx;
+            this._cursorRy = c.ry;
+            this._updateCursor(c.rx, c.ry);
+        };
+        canvas.addEventListener('touchstart',  e => { e.preventDefault(); lastTouch = performance.now(); _touchMove(e.touches[0]); }, { passive: false });
+        canvas.addEventListener('touchmove',   e => { e.preventDefault(); const now = performance.now(); if (now - lastTouch < 30) return; lastTouch = now; _touchMove(e.touches[0]); }, { passive: false });
 
         window.addEventListener('keydown', e => { if (!this.streaming) return; if (['F11','F5'].includes(e.key)) return; e.preventDefault(); this._sendInput({ KeyDown: { key_code: e.keyCode } }); });
         window.addEventListener('keyup',   e => { if (!this.streaming) return; this._sendInput({ KeyUp: { key_code: e.keyCode } }); });
