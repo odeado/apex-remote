@@ -218,10 +218,10 @@
     let captureVideo  = null;
     let captureCanvas = null;
     let captureCtx    = null;
-    let capQ          = { w: 1280, h: 720, q: 0.5 };
+    let capQ          = { w: 1280, h: 720, q: 0.35 };
 
     async function startCapture(quality) {
-      if (quality) capQ = { w: quality.w, h: quality.h, q: quality.q / 100 };
+      if (quality) capQ = { w: quality.w, h: quality.h, q: Math.min(0.45, quality.q / 100) };
       await stopCapture();
 
       try {
@@ -239,7 +239,7 @@
               chromeMediaSourceId: sources[0].id,
               maxWidth:    capQ.w,
               maxHeight:   capQ.h,
-              maxFrameRate: 60,
+              maxFrameRate: 30,
             }
           }
         });
@@ -268,20 +268,23 @@
       }
     }
 
-    // Flag para no apilar encodes: si el anterior no terminó, skip
+    // Rate limiting para envio JPEG fluido sin sobrecargar el buffer TCP
     let encoding = false;
+    let lastFrameTime = 0;
 
     function captureLoop() {
       if (!captureActive) return;
 
-      // Dibujar frame actual del video (siempre al ritmo del display para WebRTC)
+      // Dibujar frame actual del video
       captureCtx.drawImage(captureVideo, 0, 0, captureCanvas.width, captureCanvas.height);
       // Pintar cursor encima (getUserMedia no captura el cursor hardware)
       drawCursorArrow(captureCtx, cursorX, cursorY);
 
-      // JPEG solo para el fallback WebSocket — no bloquea el loop
-      if (!encoding) {
+      const now = performance.now();
+      // Enviar a ~30 FPS máximos (33ms) para evitar congestión de red
+      if (!encoding && (now - lastFrameTime >= 32)) {
         encoding = true;
+        lastFrameTime = now;
         captureCanvas.toBlob(blob => {
           if (blob && captureActive) {
             blob.arrayBuffer().then(buf => {
@@ -294,7 +297,6 @@
         }, 'image/jpeg', capQ.q);
       }
 
-      // Siguiente frame inmediatamente — no espera al encode
       if (captureActive) requestAnimationFrame(captureLoop);
     }
 

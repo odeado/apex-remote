@@ -22,7 +22,7 @@ try { robot = require('robotjs'); robot.setMouseDelay(0); robot.setKeyboardDelay
 catch (e) { console.warn('[Agent] robotjs no disponible:', e.message); }
 
 // ── Configuración ─────────────────────────────────────────────────────────────
-const RELAY_HOST = process.env.APEX_RELAY || 'apex-remote.onrender.com';
+const RELAY_HOST = process.env.APEX_RELAY || 'apex-remote-production.up.railway.app';
 const RELAY_URL  = `wss://${RELAY_HOST}/ws`;
 const AGENT_ID   = process.env.APEX_ID   || String(Math.floor(100000 + Math.random() * 900000));
 const AGENT_PIN  = process.env.APEX_PIN  || String(Math.floor(1000   + Math.random() * 9000));
