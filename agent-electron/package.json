@@ -1,0 +1,50 @@
+{
+  "name": "apexremote-agent",
+  "productName": "ApexRemote Agent",
+  "version": "1.0.0",
+  "description": "ApexRemote — Agente de control remoto",
+  "author": "ApexRemote",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron .",
+    "rebuild": "electron-rebuild -f -w robotjs",
+    "postinstall": "electron-rebuild -f -w robotjs",
+    "build": "electron-builder --win --x64",
+    "build:installer": "electron-builder --win nsis --x64"
+  },
+  "dependencies": {
+    "robotjs": "^0.6.0",
+    "ws": "^8.18.0"
+  },
+  "devDependencies": {
+    "@electron/rebuild": "^3.6.0",
+    "electron": "^28.3.3",
+    "electron-builder": "^24.13.3"
+  },
+  "build": {
+    "appId": "com.apexremote.agent",
+    "productName": "ApexRemote Agent",
+    "copyright": "ApexRemote",
+    "forceCodeSigning": false,
+    "win": {
+      "target": [
+        { "target": "nsis", "arch": ["x64"] }
+      ],
+      "requestedExecutionLevel": "requireAdministrator",
+      "sign": null
+    },
+    "nsis": {
+      "oneClick": true,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": false,
+      "shortcutName": "ApexRemote Agent"
+    },
+    "files": [
+      "main.js",
+      "preload.js",
+      "renderer/**",
+      "assets/**",
+      "node_modules/**"
+    ]
+  }
+}

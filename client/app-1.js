@@ -540,36 +540,21 @@ class ApexRemote {
             if (escHint)  escHint.classList.toggle('hidden', !locked);
         });
 
-        // Movimiento del mouse: Soporta modo Absoluto (hover/drag directo) y Pointer Lock (delta)
-        let lastMoveTime = 0;
+        // Movimiento: delta puro, escalado a píxeles del escritorio remoto
         document.addEventListener('mousemove', e => {
-            if (!this.streaming) return;
-            const now = performance.now();
-            if (document.pointerLockElement === canvas) {
-                if (now - lastMoveTime < 12) return; // 80Hz throttle para suavidad óptima
-                lastMoveTime = now;
-                const rect  = canvas.getBoundingClientRect();
-                const scale = rect.width > 0 ? canvas.width / rect.width : 1;
-                const dx = Math.round(e.movementX * scale);
-                const dy = Math.round(e.movementY * scale);
-                if (dx === 0 && dy === 0) return;
-                this._sendInput({ MouseMoveDelta: { dx, dy } });
-                this._cursorRx = Math.max(0, Math.min(1, this._cursorRx + dx / (canvas.width  || 1280)));
-                this._cursorRy = Math.max(0, Math.min(1, this._cursorRy + dy / (canvas.height || 720)));
-                this._updateCursor(this._cursorRx, this._cursorRy);
-            } else {
-                const rect = canvas.getBoundingClientRect();
-                if (e.clientX >= rect.left && e.clientX <= rect.right &&
-                    e.clientY >= rect.top  && e.clientY <= rect.bottom) {
-                    if (now - lastMoveTime < 16) return; // ~60 FPS throttle
-                    lastMoveTime = now;
-                    const c = this._coords(e);
-                    this._sendInput({ MouseMove: c });
-                    this._cursorRx = c.rx;
-                    this._cursorRy = c.ry;
-                    this._updateCursor(c.rx, c.ry);
-                }
-            }
+            if (!this.streaming || document.pointerLockElement !== canvas) return;
+            const rect  = canvas.getBoundingClientRect();
+            const scale = rect.width > 0 ? canvas.width / rect.width : 1;
+            const dx = Math.round(e.movementX * scale);
+            const dy = Math.round(e.movementY * scale);
+            if (dx === 0 && dy === 0) return;
+            // 1) Enviar delta al agente remoto
+            this._sendInput({ MouseMoveDelta: { dx, dy } });
+            // 2) Mover el cursor overlay LOCAL inmediatamente (0 latencia)
+            //    No esperamos la vuelta por red — predicción instantánea
+            this._cursorRx = Math.max(0, Math.min(1, this._cursorRx + dx / (canvas.width  || 1280)));
+            this._cursorRy = Math.max(0, Math.min(1, this._cursorRy + dy / (canvas.height || 720)));
+            this._updateCursor(this._cursorRx, this._cursorRy);
         });
 
         canvas.addEventListener('mousedown',   e => { e.preventDefault(); if (this.streaming) this._sendInput({ MouseDown: { button: e.button } }); });

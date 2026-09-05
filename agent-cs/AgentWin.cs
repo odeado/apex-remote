@@ -208,6 +208,7 @@ namespace ApexRemote
 
         const int  INPUT_MOUSE    = 0;
         const int  INPUT_KEYBOARD = 1;
+        const uint MOUSEEVENTF_MOVE       = 0x0001;
         const uint MOUSEEVENTF_LEFTDOWN   = 0x0002;
         const uint MOUSEEVENTF_LEFTUP     = 0x0004;
         const uint MOUSEEVENTF_RIGHTDOWN  = 0x0008;
@@ -603,7 +604,19 @@ namespace ApexRemote
         void ExecEvent(string ev)
         {
             try {
-                if (ev.Contains("MouseMove")) {
+                if (ev.Contains("MouseMoveDelta")) {
+                    int dx = (int)GetNum(ev, "dx");
+                    int dy = (int)GetNum(ev, "dy");
+                    if (dx != 0 || dy != 0) {
+                        var inputs = new INPUT[1];
+                        inputs[0].type = INPUT_MOUSE;
+                        inputs[0].u.mi.dx = dx;
+                        inputs[0].u.mi.dy = dy;
+                        inputs[0].u.mi.dwFlags = MOUSEEVENTF_MOVE;
+                        SendInput(1, inputs, System.Runtime.InteropServices.Marshal.SizeOf(typeof(INPUT)));
+                    }
+                }
+                else if (ev.Contains("MouseMove")) {
                     double rx = GetNum(ev, "rx"), ry = GetNum(ev, "ry");
                     var b = Screen.PrimaryScreen.Bounds;
                     int x = b.X + (int)(rx * b.Width), y = b.Y + (int)(ry * b.Height);

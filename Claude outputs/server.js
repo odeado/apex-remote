@@ -1,0 +1,390 @@
+/**
+ * ╔══════════════════════════════════════════════════════╗
+ * ║          ApexRemote - Relay & HTTP Server            ║
+ * ║                                                      ║
+ * ║  Soporta tanto WebSockets como HTTPS POST Polling    ║
+ * ║  para compatibilidad 100% con Windows 7/8/10/11.     ║
+ * ╚══════════════════════════════════════════════════════╝
+ */
+
+const http  = require('http');
+const fs    = require('fs');
+const path  = require('path');
+const { WebSocketServer, WebSocket } = require('ws');
+
+const PORT       = process.env.PORT || 8080;
+const CLIENT_DIR = path.resolve(__dirname, '..', 'client');
+
+// ── Sesiones activas ──────────────────────────────────────────────────────────
+const sessions = new Map();
+
+const MIME = {
+    '.html': 'text/html; charset=utf-8',
+    '.css':  'text/css',
+    '.js':   'application/javascript',
+    '.ico':  'image/x-icon',
+    '.png':  'image/png',
+    '.jpg':  'image/jpeg',
+};
+
+const SERVER_BOOT_TIME = new Date().toLocaleTimeString('es-ES', { timeZone: 'America/Santiago', hour: '2-digit', minute: '2-digit', second: '2-digit' }) + ' (' + new Date().toLocaleDateString('es-ES', { timeZone: 'America/Santiago' }) + ')';
+
+// ── HTTP Server ───────────────────────────────────────────────────────────────
+const server = http.createServer((req, res) => {
+
+    // ── Health check (keeps Render free-tier awake) ───────────────────────────
+    if (req.method === 'GET' && req.url === '/health') {
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ status: 'ok', uptime: process.uptime(), sessions: sessions.size }));
+        return;
+    }
+
+    // ── Debug: list active sessions ───────────────────────────────────────────
+    if (req.method === 'GET' && req.url === '/api/sessions') {
+        const list = [];
+        sessions.forEach((s, id) => {
+            const agentOk = s.agent && typeof s.agent.readyState === 'number'
+                ? s.agent.readyState === 1   // WebSocket.OPEN
+                : s.agent === 'http';
+            list.push({ id, agentConnected: agentOk, viewers: s.viewers ? s.viewers.size : 0 });
+        });
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ sessions: list, uptime: Math.round(process.uptime()) }));
+        return;
+    }
+
+    // ── HTTP Endpoint: Registro de Agente (Windows 7 HTTPS Fallback) ───────────
+    if (req.method === 'POST' && req.url === '/api/agent/register') {
+        let body = '';
+        req.on('data', chunk => body += chunk);
+        req.on('end', () => {
+            try {
+                const data = JSON.parse(body);
+                const id = data.id || generateId();
+                if (!sessions.has(id)) {
+                    sessions.set(id, { agent: 'http', viewers: new Set(), inputs: [], lastFrame: null, lastSeen: Date.now() });
+                } else {
+                    const s = sessions.get(id);
+                    s.lastSeen = Date.now();
+                }
+                console.log(`✅ [HTTP AGENT Win7] Registered ID=${id}`);
+                res.writeHead(200, { 'Content-Type': 'application/json' });
+                res.end(JSON.stringify({ type: 'registered', id }));
+            } catch (e) {
+                res.writeHead(400); res.end();
+            }
+        });
+        return;
+    }
+
+    // ── HTTP Endpoint: Recepción de Frame JPEG desde Agente (Auto-registro) ────
+    if (req.method === 'POST' && req.url.startsWith('/api/agent/frame')) {
+        const urlParams = new URLSearchParams(req.url.split('?')[1]);
+        const id = urlParams.get('id');
+        let chunks = [];
+        req.on('data', chunk => chunks.push(chunk));
+        req.on('end', () => {
+            const frameBuffer = Buffer.concat(chunks);
+            let session = sessions.get(id);
+            if (!session) {
+                session = { agent: 'http', viewers: new Set(), inputs: [], lastFrame: null, lastSeen: Date.now() };
+                sessions.set(id, session);
+                console.log(`✅ [HTTP AGENT Auto-Registered] ID=${id}`);
+            }
+
+            session.lastSeen = Date.now();
+            if (frameBuffer.length > 0) {
+                session.lastFrame = frameBuffer;
+                // Transmitir a los viewers conectados vía WebSocket
+                session.viewers.forEach(viewer => {
+                    if (viewer.readyState === WebSocket.OPEN) {
+                        viewer.send(frameBuffer, { binary: true });
+                    }
+                });
+            }
+
+            // Responder con eventos de input pendientes para el agente Win7
+            const pendingInputs = session.inputs.splice(0, 10);
+            res.writeHead(200, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ hasViewers: session.viewers.size > 0, inputs: pendingInputs }));
+        });
+        return;
+    }
+
+    // ── Long-Poll: El agente espera hasta recibir inputs (latencia = solo RTT) ──
+    if (req.method === 'GET' && req.url.startsWith('/api/agent/poll')) {
+        const urlParams = new URLSearchParams(req.url.split('?')[1]);
+        const id = urlParams.get('id');
+        if (!id) { res.writeHead(400); res.end(); return; }
+
+        let session = sessions.get(id);
+        if (!session) {
+            res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-cache' });
+            res.end(JSON.stringify({ inputs: [] }));
+            return;
+        }
+
+        // Si ya hay inputs en cola → responder de inmediato
+        if (session.inputs.length > 0) {
+            const inputs = session.inputs.splice(0, 50);
+            res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-cache' });
+            res.end(JSON.stringify({ inputs }));
+            return;
+        }
+
+        // Si no hay inputs → mantener conexión abierta hasta 8 segundos
+        res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-cache' });
+
+        const timeout = setTimeout(() => {
+            if (session.onInputs) { session.onInputs = null; }
+            try { res.end(JSON.stringify({ inputs: [] })); } catch {}
+        }, 8000);
+
+        session.onInputs = (inputs) => {
+            clearTimeout(timeout);
+            session.onInputs = null;
+            try { res.end(JSON.stringify({ inputs })); } catch {}
+        };
+
+        req.on('close', () => { clearTimeout(timeout); session.onInputs = null; });
+        return;
+    }
+
+    // Servir UI estática
+    const urlClean = req.url.split('?')[0];
+    let filePath = path.join(CLIENT_DIR, urlClean === '/' ? 'index.html' : urlClean);
+    const ext    = path.extname(filePath);
+    const mime   = MIME[ext] || 'text/plain';
+
+    fs.readFile(filePath, (err, data) => {
+        if (err) {
+            fs.readFile(path.join(CLIENT_DIR, 'index.html'), (err2, d) => {
+                if (err2) { res.writeHead(404); return res.end('404'); }
+                let html = d.toString('utf8')
+                    .replace('__BUILD_TIME__', SERVER_BOOT_TIME)
+                    .replace(/app\.js(\?[^"]*)?/g, `app.js?t=${Date.now()}`)
+                    .replace(/style\.css(\?[^"]*)?/g, `style.css?t=${Date.now()}`);
+                res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-cache, no-store, must-revalidate, max-age=0' });
+                res.end(html);
+            });
+            return;
+        }
+        if (ext === '.html') {
+            let html = data.toString('utf8')
+                .replace('__BUILD_TIME__', SERVER_BOOT_TIME)
+                .replace(/app\.js(\?[^"]*)?/g, `app.js?t=${Date.now()}`)
+                .replace(/style\.css(\?[^"]*)?/g, `style.css?t=${Date.now()}`);
+            res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-cache, no-store, must-revalidate, max-age=0' });
+            return res.end(html);
+        }
+        res.writeHead(200, { 'Content-Type': mime, 'Cache-Control': 'no-cache, no-store, must-revalidate, max-age=0' });
+        res.end(data);
+    });
+});
+
+// ── WebSocket Server ──────────────────────────────────────────────────────────
+const wss = new WebSocketServer({ server });
+
+wss.on('connection', (ws, req) => {
+    ws._role = null;
+    ws._id   = null;
+
+    ws.on('message', (data, isBinary) => {
+        if (isBinary) {
+            if (ws._role !== 'agent') return;
+            const session = sessions.get(ws._id);
+            if (!session) return;
+            session.viewers.forEach(viewer => {
+                if (viewer.readyState === WebSocket.OPEN) {
+                    viewer.send(data, { binary: true });
+                }
+            });
+            return;
+        }
+
+        let msg;
+        try { msg = JSON.parse(data.toString()); } catch { return; }
+
+        switch (msg.type) {
+            case 'register': {
+                const id = msg.id || generateId();
+                ws._role = 'agent';
+                ws._id   = id;
+
+                if (!sessions.has(id)) {
+                    sessions.set(id, { agent: ws, viewers: new Set(), inputs: [], lastFrame: null, lastSeen: Date.now() });
+                } else {
+                    sessions.get(id).agent = ws;
+                }
+                console.log(`✅ [WS AGENT] Registered ID=${id}`);
+                ws.send(JSON.stringify({ type: 'registered', id }));
+                break;
+            }
+
+            case 'view': {
+                const id = msg.id?.replace(/[^0-9]/g, '');
+                if (!id) return ws.send(JSON.stringify({ type: 'error', message: 'ID inválido' }));
+
+                let session = sessions.get(id);
+                if (!session) {
+                    return ws.send(JSON.stringify({ type: 'error', message: `Equipo ${id} no encontrado o desconectado` }));
+                }
+
+                ws._role = 'viewer';
+                ws._id   = id;
+                session.viewers.add(ws);
+
+                console.log(`👁  [VIEW] ID=${id} Viewers=${session.viewers.size}`);
+                ws.send(JSON.stringify({ type: 'session_started', id, info: { hostname: 'Equipo Remoto' } }));
+
+                // Si hay un frame previo guardado, enviarlo inmediatamente
+                if (session.lastFrame) {
+                    ws.send(session.lastFrame, { binary: true });
+                }
+
+                if (session.agent && typeof session.agent.send === 'function' && session.agent.readyState === WebSocket.OPEN) {
+                    session.agent.send(JSON.stringify({ type: 'viewer_connected', count: session.viewers.size }));
+                }
+                break;
+            }
+
+            case 'webrtc_offer': {
+                if (ws._role !== 'viewer') return;
+                const session = sessions.get(ws._id);
+                if (session && session.agent && session.agent.readyState === WebSocket.OPEN) {
+                    session.agent.send(JSON.stringify({ type: 'webrtc_offer', offer: msg.offer }));
+                }
+                break;
+            }
+
+            case 'webrtc_answer': {
+                if (ws._role !== 'agent') return;
+                const session = sessions.get(ws._id);
+                if (session) {
+                    session.viewers.forEach(v => {
+                        if (v.readyState === WebSocket.OPEN)
+                            v.send(JSON.stringify({ type: 'webrtc_answer', answer: msg.answer }));
+                    });
+                }
+                break;
+            }
+
+            case 'webrtc_ice': {
+                const session = sessions.get(ws._id);
+                if (!session) return;
+                if (ws._role === 'viewer') {
+                    if (session.agent && session.agent.readyState === WebSocket.OPEN)
+                        session.agent.send(JSON.stringify({ type: 'webrtc_ice', candidate: msg.candidate }));
+                } else if (ws._role === 'agent') {
+                    session.viewers.forEach(v => {
+                        if (v.readyState === WebSocket.OPEN)
+                            v.send(JSON.stringify({ type: 'webrtc_ice', candidate: msg.candidate }));
+                    });
+                }
+                break;
+            }
+
+            case 'fs_list_res': {
+                if (ws._role !== 'agent') return;
+                const session = sessions.get(ws._id);
+                if (session) {
+                    session.viewers.forEach(v => {
+                        if (v.readyState === WebSocket.OPEN)
+                            v.send(JSON.stringify(msg));
+                    });
+                }
+                break;
+            }
+
+            case 'file_download_chunk': {
+                // Agente → Viewers (archivo remoto que el viewer quiso descargar)
+                if (ws._role !== 'agent') return;
+                const session = sessions.get(ws._id);
+                if (session) {
+                    session.viewers.forEach(v => {
+                        if (v.readyState === WebSocket.OPEN)
+                            v.send(JSON.stringify(msg));
+                    });
+                }
+                break;
+            }
+
+            case 'cursor_pos': {
+                // Agente → Viewers: posición del cursor en tiempo real
+                if (ws._role !== 'agent') return;
+                const session = sessions.get(ws._id);
+                if (session) {
+                    session.viewers.forEach(v => {
+                        if (v.readyState === WebSocket.OPEN)
+                            v.send(JSON.stringify(msg));
+                    });
+                }
+                break;
+            }
+
+            case 'input': {
+                if (ws._role !== 'viewer') return;
+                const session = sessions.get(ws._id);
+                if (!session) return;
+
+                if (session.agent && typeof session.agent.send === 'function' && session.agent.readyState === WebSocket.OPEN) {
+                    const ev = msg.event || {};
+                    if (ev.FileChunk) {
+                        session.agent.send(JSON.stringify({ type: 'file_chunk', ...ev.FileChunk }));
+                    } else if (ev.FsList) {
+                        session.agent.send(JSON.stringify({ type: 'fs_list', path: ev.FsList.path }));
+                    } else if (ev.FsDelete) {
+                        session.agent.send(JSON.stringify({ type: 'fs_delete', path: ev.FsDelete.path }));
+                    } else if (ev.FsMkdir) {
+                        session.agent.send(JSON.stringify({ type: 'fs_mkdir', path: ev.FsMkdir.path }));
+                    } else if (ev.FsDownload) {
+                        session.agent.send(JSON.stringify({ type: 'fs_download', path: ev.FsDownload.path }));
+                    } else {
+                        session.agent.send(JSON.stringify(msg));
+                    }
+                } else {
+                    const ev = msg.event || {};
+                    if (ev.FileChunk) {
+                        session.inputs.push({ FileChunk: ev.FileChunk });
+                    } else {
+                        session.inputs.push(ev);
+                    }
+                    if (session.onInputs) {
+                        const inputs = session.inputs.splice(0, 50);
+                        session.onInputs(inputs);
+                    }
+                }
+                break;
+            }
+        }
+    });
+
+    ws.on('close', () => {
+        if (!ws._id) return;
+        const session = sessions.get(ws._id);
+        if (!session) return;
+        if (ws._role === 'viewer') session.viewers.delete(ws);
+    });
+});
+
+server.listen(PORT, '0.0.0.0', () => {
+    console.log(`⚡ ApexRemote Relay Server v1.0 corriendo en puerto ${PORT}`);
+});
+
+// ── WebSocket Keep-Alive (evita que Render free-tier duerma el proceso) ───────
+setInterval(() => {
+    wss.clients.forEach(ws => {
+        if (ws.isAlive === false) { ws.terminate(); return; }
+        ws.isAlive = false;
+        ws.ping();
+    });
+}, 25000);
+
+wss.on('connection', ws => {
+    ws.isAlive = true;
+    ws.on('pong', () => { ws.isAlive = true; });
+});
+
+function generateId() {
+    return String(Math.floor(100000 + Math.random() * 900000));
+}

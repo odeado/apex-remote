@@ -9,7 +9,7 @@
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
-    <link rel="stylesheet" href="style.css?v=8">
+    <link rel="stylesheet" href="style.css?v=10">
 </head>
 <body>
 <div id="app">
@@ -55,6 +55,13 @@
                             <input type="text" id="remote-id-input" class="id-input" placeholder="591758" maxlength="6" inputmode="numeric" autocomplete="off">
                             <button id="btn-connect" class="btn-connect">Conectar <span class="btn-icon">⚡</span></button>
                         </div>
+                        <label class="field-label" for="remote-pin-input" style="margin-top:14px;">
+                            PIN de Seguridad <span style="color:#546078;font-size:11px;font-weight:400;"> — 4 dígitos (opcional)</span>
+                        </label>
+                        <div class="id-input-row">
+                            <input type="password" id="remote-pin-input" class="id-input" placeholder="••••" maxlength="4" inputmode="numeric" autocomplete="off" style="letter-spacing:6px;max-width:140px;">
+                            <span id="pin-status" style="font-size:12px;color:#546078;align-self:center;margin-left:8px;"></span>
+                        </div>
                         <div id="connect-error" class="connect-error hidden"></div>
                     </div>
                     <div class="recent-section">
@@ -89,19 +96,27 @@
                 </div>
             </div>
             <div class="hud-right">
-                <button id="btn-file" class="hud-btn" title="Enviar archivo al equipo remoto" onclick="document.getElementById('file-input').click()">📁 Archivo</button>
-                <input type="file" id="file-input" style="display:none">
+                <button id="btn-files-remote" class="hud-btn" title="Explorador de archivos dual">📂 Archivos</button>
                 <button id="btn-fullscreen" class="hud-btn" title="Pantalla completa">⛶</button>
                 <button id="btn-disconnect" class="hud-btn danger">✕ Salir</button>
             </div>
         </div>
-        <!-- File transfer progress strip -->
         <div id="file-transfer-bar" class="file-bar hidden">
             <span id="file-label">Arrastra o selecciona un archivo</span>
             <div class="file-progress-track"><div id="file-progress" class="file-progress-fill"></div></div>
         </div>
         <div class="viewer-canvas-wrap" id="canvas-wrap">
             <canvas id="remote-canvas"></canvas>
+            <!-- Cursor remoto overlay: posicionado por JS cuando llega cursor_pos -->
+            <div id="remote-cursor" class="remote-cursor hidden"></div>
+            <!-- Pointer Lock hints -->
+            <div id="pointer-lock-hint" class="pointer-lock-hint hidden">
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><path d="M12 8v4"/><circle cx="12" cy="16" r="0.5" fill="currentColor"/></svg>
+                Click para controlar el mouse
+            </div>
+            <div id="pointer-lock-esc" class="pointer-lock-esc hidden">
+                <kbd>ESC</kbd> para liberar el mouse
+            </div>
             <div class="viewer-overlay" id="viewer-overlay">
                 <div class="overlay-spinner"></div>
                 <p id="overlay-text">Conectando...</p>
@@ -111,19 +126,108 @@
                 <button class="touch-btn" id="touch-lclick">👆</button>
                 <button class="touch-btn" id="touch-rclick">☰</button>
                 <button class="touch-btn" id="touch-scroll-down">↓</button>
+            </div>
             <div class="dropzone-overlay hidden" id="dropzone-overlay">
                 <div class="dropzone-box">
                     <div class="dropzone-icon">📁</div>
-                    <div class="dropzone-title">Suelta los archivos aquí para transferir</div>
-                    <div class="dropzone-sub">Se guardarán automáticamente en la carpeta Descargas y Escritorio de la PC remota</div>
+                    <div class="dropzone-title">Suelta archivos aquí para transferir</div>
+                    <div class="dropzone-sub">Se guardarán en Descargas y Escritorio de la PC remota</div>
                 </div>
             </div>
         </div>
     </div>
 
+    <!-- FILE MANAGER DUAL-PANE -->
+    <div id="file-manager" class="file-manager hidden">
+        <div class="fm-header">
+            <div class="fm-title">⚡ ApexRemote — Transferencia de Archivos</div>
+            <button class="fm-close" id="fm-close-btn">✕</button>
+        </div>
+        <div class="fm-body">
+
+            <!-- PANE IZQUIERDO: LOCAL -->
+            <div class="fm-pane" id="fm-local-pane">
+                <div class="fm-pane-top">
+                    <div class="fm-computer-label">
+                        <span class="fm-computer-icon">🖥</span>
+                        <span>Computadora local</span>
+                    </div>
+                    <div class="fm-nav-bar">
+                        <button class="fm-nav-btn" id="fm-local-home" title="Inicio">🏠</button>
+                        <button class="fm-nav-btn" id="fm-local-up" title="Subir">⬆</button>
+                        <span class="fm-breadcrumb" id="fm-local-path">—</span>
+                        <button class="fm-nav-btn" id="fm-local-refresh" title="Refrescar">🔄</button>
+                    </div>
+                    <div class="fm-toolbar">
+                        <button class="fm-tool-btn" id="fm-local-mkdir" title="Nueva carpeta">📁+</button>
+                        <button class="fm-tool-btn danger" id="fm-local-delete" title="Eliminar">🗑</button>
+                        <button class="fm-select-dir-btn" id="fm-local-open">📂 Abrir carpeta...</button>
+                    </div>
+                </div>
+                <div class="fm-col-header">
+                    <span>Nombre</span><span>Modificado</span><span style="text-align:right">Tamaño</span>
+                </div>
+                <div class="fm-list" id="fm-local-list">
+                    <div class="fm-empty">
+                        <div class="fm-empty-icon">📂</div>
+                        <span>Haz clic en "Abrir carpeta" para explorar</span>
+                    </div>
+                </div>
+            </div>
+
+            <!-- BOTONES CENTRALES -->
+            <div class="fm-mid">
+                <button class="fm-send-btn" id="fm-btn-send" title="Enviar seleccionado al equipo remoto">Enviar →</button>
+                <div class="fm-mid-divider"></div>
+                <button class="fm-recv-btn" id="fm-btn-recv" title="Descargar seleccionado desde equipo remoto">← Recibir</button>
+            </div>
+
+            <!-- PANE DERECHO: REMOTO -->
+            <div class="fm-pane" id="fm-remote-pane">
+                <div class="fm-pane-top">
+                    <div class="fm-computer-label">
+                        <span class="fm-computer-icon">🖥</span>
+                        <span>Computadora remota</span>
+                    </div>
+                    <div class="fm-nav-bar">
+                        <button class="fm-nav-btn" id="fm-remote-home" title="Inicio">🏠</button>
+                        <button class="fm-nav-btn" id="fm-remote-up" title="Subir">⬆</button>
+                        <span class="fm-breadcrumb" id="fm-remote-path">—</span>
+                        <button class="fm-nav-btn" id="fm-remote-refresh" title="Refrescar">🔄</button>
+                    </div>
+                    <div class="fm-toolbar">
+                        <button class="fm-tool-btn" id="fm-remote-mkdir" title="Nueva carpeta remota">📁+</button>
+                        <button class="fm-tool-btn danger" id="fm-remote-delete" title="Eliminar en remoto">🗑</button>
+                    </div>
+                </div>
+                <div class="fm-col-header">
+                    <span>Nombre</span><span>Modificado</span><span style="text-align:right">Tamaño</span>
+                </div>
+                <div class="fm-list" id="fm-remote-list">
+                    <div class="fm-empty">
+                        <div class="fm-empty-icon">🔄</div>
+                        <span>Cargando archivos remotos...</span>
+                    </div>
+                </div>
+            </div>
+
+            <!-- COLA DE TRANSFERENCIAS -->
+            <div class="fm-queue">
+                <div class="fm-queue-header">⇄ Transferencias</div>
+                <div class="fm-queue-list" id="fm-queue-list">
+                    <div class="fm-queue-empty">
+                        <div class="fm-queue-icon">⇄</div>
+                        <span>No hay transferencias en curso</span>
+                    </div>
+                </div>
+            </div>
+
+        </div>
+    </div>
+
 </div>
 <div id="toast-container" class="toast-container"></div>
-<script src="app.js?v=8"></script>
+<script src="app.js?v=10"></script>
 <script>
 const obs = new MutationObserver(() => {
     const d2 = document.getElementById('status-dot2');
