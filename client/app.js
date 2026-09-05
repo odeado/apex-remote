@@ -53,6 +53,7 @@ class ApexRemote {
         if (e.data instanceof ArrayBuffer) { this._renderFrame(e.data); return; }
         let msg; try { msg = JSON.parse(e.data); } catch { return; }
         if (msg.type === 'session_started') {
+            this._cancelView();   // stop retry loop
             document.getElementById('viewer-hostname').textContent   = msg.info && msg.info.hostname ? msg.info.hostname : 'Equipo Remoto';
             document.getElementById('viewer-id-display').textContent = 'ID: ' + msg.id;
             this.streaming = true;
@@ -77,14 +78,22 @@ class ApexRemote {
                 try { this.pc.addIceCandidate(new RTCIceCandidate(msg.candidate)).catch(() => {}); } catch(e) {}
             }
         } else if (msg.type === 'error') {
-            this._showError(msg.message);
-            // Si el error es de PIN, volver al home
-            if (msg.message && msg.message.toLowerCase().includes('pin')) {
+            const isPinErr = msg.message && (msg.message.toLowerCase().includes('pin') || msg.message.toLowerCase().includes('contraseña'));
+            if (isPinErr) {
+                // PIN wrong → cancel retry and go home
+                this._cancelView();
+                this._showError(msg.message);
                 setTimeout(() => this.endSession(), 1200);
                 const ps = document.getElementById('pin-status');
                 if (ps) { ps.textContent = '❌ PIN incorrecto'; ps.style.color = '#ff4d6d'; }
+            } else {
+                // Non-PIN error (agent not found, etc.) → retry is still running, just show toast
+                // Don't call _showError (targets hidden home div)
+                // The overlay text already shows the countdown — don't interrupt unless streaming
+                if (this.streaming) this._agentGone();
             }
         } else if (msg.type === 'pin_rejected') {
+            this._cancelView();
             this._showError('PIN incorrecto. Verifica el PIN que muestra el agente.');
             setTimeout(() => this.endSession(), 1500);
         } else if (msg.type === 'agent_disconnected') {
@@ -176,9 +185,38 @@ class ApexRemote {
         const pin = (document.getElementById('remote-pin-input')?.value || '').trim();
         this._saveRecent(id);
         this._showScreen('viewer');
-        this._showOverlay('Conectando con ID: ' + id + '...');
-        const msg = pin ? { type: 'view', id, pin } : { type: 'view', id };
-        this.ws.send(JSON.stringify(msg));
+        this._showOverlay('Buscando agente ' + id + '…');
+        // Retry logic: keep sending view request until agent registers
+        this._cancelView();
+        this._pendingViewId  = id;
+        this._pendingViewPin = pin;
+        this._viewAttempts   = 0;
+        this._sendViewMsg();
+    }
+
+    _sendViewMsg() {
+        if (!this._pendingViewId) return;
+        if (!this.ws || this.ws.readyState !== WebSocket.OPEN) return;
+        const id  = this._pendingViewId;
+        const pin = this._pendingViewPin;
+        this.ws.send(JSON.stringify(pin ? { type: 'view', id, pin } : { type: 'view', id }));
+        this._viewAttempts++;
+        const elapsed = this._viewAttempts * 3;
+        if (this._viewAttempts >= 20) {          // 60 s timeout
+            this._cancelView();
+            this._showOverlay('El agente ' + id + ' no responde. ¿Está corriendo el agente?');
+            setTimeout(() => this.endSession(), 3500);
+            return;
+        }
+        const el = document.getElementById('overlay-text');
+        if (el) el.textContent = 'Buscando agente ' + id + '… (' + elapsed + 's)';
+        this._viewRetryTimer = setTimeout(() => this._sendViewMsg(), 3000);
+    }
+
+    _cancelView() {
+        this._pendingViewId = null;
+        this._pendingViewPin = null;
+        if (this._viewRetryTimer) { clearTimeout(this._viewRetryTimer); this._viewRetryTimer = null; }
     }
 
     quickConnect(id) {
@@ -188,6 +226,7 @@ class ApexRemote {
     }
 
     endSession() {
+        this._cancelView();   // stop any pending view retry
         this.streaming = false;
         this._fitted = false;
         this._hideFileBar();
@@ -475,10 +514,10 @@ class ApexRemote {
         });
 
         // Touch buttons
-        document.getElementById('touch-lclick')?.addEventListener('touchstart',     e => { e.preventDefault(); this._sendInput({ MouseDown: { button: 'Left'  } }); }, { passive: false });
-        document.getElementById('touch-lclick')?.addEventListener('touchend',       e => { e.preventDefault(); this._sendInput({ MouseUp:   { button: 'Left'  } }); }, { passive: false });
-        document.getElementById('touch-rclick')?.addEventListener('touchstart',     e => { e.preventDefault(); this._sendInput({ MouseDown: { button: 'Right' } }); }, { passive: false });
-        document.getElementById('touch-rclick')?.addEventListener('touchend',       e => { e.preventDefault(); this._sendInput({ MouseUp:   { button: 'Right' } }); }, { passive: false });
+        document.getElementById('touch-lclick')?.addEventListener('touchstart',     e => { e.preventDefault(); this._sendInput({ MouseDown: { button: 0 } }); }, { passive: false });
+        document.getElementById('touch-lclick')?.addEventListener('touchend',       e => { e.preventDefault(); this._sendInput({ MouseUp:   { button: 0 } }); }, { passive: false });
+        document.getElementById('touch-rclick')?.addEventListener('touchstart',     e => { e.preventDefault(); this._sendInput({ MouseDown: { button: 1 } }); }, { passive: false });
+        document.getElementById('touch-rclick')?.addEventListener('touchend',       e => { e.preventDefault(); this._sendInput({ MouseUp:   { button: 1 } }); }, { passive: false });
         document.getElementById('touch-scroll-up')?.addEventListener('touchstart',   e => { e.preventDefault(); this._sendInput({ MouseScroll: { delta_y: -120 } }); }, { passive: false });
         document.getElementById('touch-scroll-down')?.addEventListener('touchstart', e => { e.preventDefault(); this._sendInput({ MouseScroll: { delta_y:  120 } }); }, { passive: false });
 
@@ -518,8 +557,8 @@ class ApexRemote {
             this._updateCursor(this._cursorRx, this._cursorRy);
         });
 
-        canvas.addEventListener('mousedown',   e => { e.preventDefault(); if (this.streaming) this._sendInput({ MouseDown: { button: ['Left','Middle','Right'][e.button] || 'Left' } }); });
-        canvas.addEventListener('mouseup',     e => { if (this.streaming) this._sendInput({ MouseUp: { button: ['Left','Middle','Right'][e.button] || 'Left' } }); });
+        canvas.addEventListener('mousedown',   e => { e.preventDefault(); if (this.streaming) this._sendInput({ MouseDown: { button: e.button } }); });
+        canvas.addEventListener('mouseup',     e => { if (this.streaming) this._sendInput({ MouseUp:   { button: e.button } }); });
         canvas.addEventListener('contextmenu', e => e.preventDefault());
         canvas.addEventListener('wheel',       e => { e.preventDefault(); if (this.streaming) this._sendInput({ MouseScroll: { delta_y: Math.round(e.deltaY) } }); }, { passive: false });
 
@@ -537,8 +576,8 @@ class ApexRemote {
         canvas.addEventListener('touchstart',  e => { e.preventDefault(); lastTouch = performance.now(); _touchMove(e.touches[0]); }, { passive: false });
         canvas.addEventListener('touchmove',   e => { e.preventDefault(); const now = performance.now(); if (now - lastTouch < 30) return; lastTouch = now; _touchMove(e.touches[0]); }, { passive: false });
 
-        window.addEventListener('keydown', e => { if (!this.streaming) return; if (['F11','F5'].includes(e.key)) return; e.preventDefault(); this._sendInput({ KeyDown: { key_code: e.keyCode } }); });
-        window.addEventListener('keyup',   e => { if (!this.streaming) return; this._sendInput({ KeyUp: { key_code: e.keyCode } }); });
+        window.addEventListener('keydown', e => { if (!this.streaming) return; if (['F11','F5'].includes(e.key)) return; e.preventDefault(); this._sendInput({ KeyDown: { key_code: e.code } }); });
+        window.addEventListener('keyup',   e => { if (!this.streaming) return; this._sendInput({ KeyUp:   { key_code: e.code } }); });
         window.addEventListener('resize',  () => this._fitCanvas());
     }
 

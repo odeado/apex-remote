@@ -39,6 +39,20 @@ const server = http.createServer((req, res) => {
         return;
     }
 
+    // ── Debug: list active sessions ───────────────────────────────────────────
+    if (req.method === 'GET' && req.url === '/api/sessions') {
+        const list = [];
+        sessions.forEach((s, id) => {
+            const agentOk = s.agent && typeof s.agent.readyState === 'number'
+                ? s.agent.readyState === 1   // WebSocket.OPEN
+                : s.agent === 'http';
+            list.push({ id, agentConnected: agentOk, viewers: s.viewers ? s.viewers.size : 0 });
+        });
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ sessions: list, uptime: Math.round(process.uptime()) }));
+        return;
+    }
+
     // ── HTTP Endpoint: Registro de Agente (Windows 7 HTTPS Fallback) ───────────
     if (req.method === 'POST' && req.url === '/api/agent/register') {
         let body = '';
