@@ -46,7 +46,7 @@ namespace ApexRemote
             Application.EnableVisualStyles();
             Application.SetCompatibleTextRenderingDefault(false);
 
-            string host = args.Length > 0 ? args[0] : "apex-remote.onrender.com";
+            string host = args.Length > 0 ? args[0] : "apex-remote-production.up.railway.app";
             string id   = args.Length > 1 ? args[1] : new Random().Next(100000, 999999).ToString();
 
             Application.Run(new AgentForm(host, id));
