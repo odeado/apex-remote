@@ -464,35 +464,26 @@ namespace ApexRemote
 
         void StartWsFrameLoop()
         {
-            // HILO 1 - Captura + codifica JPEG a 30 FPS máximos (33ms por frame)
+            // HILO 1 - Captura + codifica JPEG a máxima velocidad Winsock (producer)
             new Thread(() => {
-                long nextTicks = DateTime.UtcNow.Ticks;
                 while (!_cts.IsCancellationRequested && _wsMode)
                 {
                     if (_hasViewers)
                     {
-                        long now = DateTime.UtcNow.Ticks;
-                        if (now >= nextTicks)
-                        {
-                            nextTicks = now + 330000; // 33 ms por frame = 30 FPS suave
-                            byte[] jpeg = CaptureScreen();
-                            if (jpeg != null && jpeg.Length > 0) {
-                                _latestFrame = jpeg;
-                                _frameReady.Set();
-                            }
-                        }
-                        Thread.Sleep(4);
+                        byte[] jpeg = CaptureScreen();
+                        if (jpeg.Length > 0) { _latestFrame = jpeg; _frameReady.Set(); }
+                        Thread.Sleep(1);
                     }
                     else { Thread.Sleep(100); }
                 }
             }) { IsBackground = true, Priority = ThreadPriority.AboveNormal }.Start();
 
-            // HILO 2 - Envia el ultimo frame disponible (consumer)
+            // HILO 2 - Envia el ultimo frame disponible vía socket Winsock (consumer)
             new Thread(() => {
                 int frames = 0; long tsBase = DateTime.UtcNow.Ticks;
                 while (!_cts.IsCancellationRequested && _ws != null && _wsMode)
                 {
-                    _frameReady.WaitOne(100);
+                    _frameReady.WaitOne(50);
                     byte[] frame = _latestFrame;
                     _latestFrame = null;
                     if (frame == null || !_hasViewers) continue;
@@ -967,29 +958,11 @@ namespace ApexRemote
                             var ep  = new EncoderParameters(1);
                             ep.Param[0] = new EncoderParameter(System.Drawing.Imaging.Encoder.Quality, (long)_jpegQ);
                             sc.Save(ms, enc, ep);
-                            byte[] bytes = ms.ToArray();
-
-                            uint hash = FastSampleHash(bytes);
-                            if (hash == _lastFrameHash) return null;
-                            _lastFrameHash = hash;
-
-                            return bytes;
+                            return ms.ToArray();
                         }
                     }
                 }
-            } catch { return null; }
-        }
-
-        uint _lastFrameHash = 0;
-        uint FastSampleHash(byte[] b)
-        {
-            if (b == null || b.Length < 16) return 0;
-            uint h = 17;
-            h = h * 31 + b[b.Length / 4];
-            h = h * 31 + b[b.Length / 2];
-            h = h * 31 + b[b.Length * 3 / 4];
-            h = h * 31 + (uint)b.Length;
-            return h;
+            } catch { return new byte[0]; }
         }
 
         // ── Helpers ───────────────────────────────────────────────────────────
