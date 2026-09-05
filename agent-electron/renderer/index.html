@@ -277,8 +277,6 @@
 
       // Dibujar frame actual del video
       captureCtx.drawImage(captureVideo, 0, 0, captureCanvas.width, captureCanvas.height);
-      // Pintar cursor encima (getUserMedia no captura el cursor hardware)
-      drawCursorArrow(captureCtx, cursorX, cursorY);
 
       const now = performance.now();
       // Enviar a ~30 FPS máximos (33ms) para evitar congestión de red
